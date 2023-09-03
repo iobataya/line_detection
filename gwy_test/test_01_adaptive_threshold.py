@@ -8,17 +8,14 @@ with a single parameter, GAUSS_PIX
 import os,sys
 # Set folder path of this scripts for this env. variable
 sys.path.append(os.getenv("LINE_DET"))
-#from importlib import reload # python 2.7 does not require this
-import line_detection_gwy
-reload(line_detection_gwy)
-
 from line_detection_gwy import GwyApp, GwyField
 import gwy, math
 
-GAUSS_PIX = 8
+GAUSS_PIX = 6
 
 # 0. App setup
-app = GwyApp()
+if not 'app' in globals():
+    app = GwyApp()
 
 # 1. Duplicate selected Gwyddion data
 gwy.gwy_process_func_run("fix_zero", app.con, gwy.RUN_IMMEDIATE)

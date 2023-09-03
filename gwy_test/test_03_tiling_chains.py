@@ -6,47 +6,47 @@ This script generate tiled grid with chains from result_vmaps
 """
 import os,sys
 sys.path.append(os.getenv("LINE_DET"))
-#from importlib import reload # python 2.7 does not require this
-import line_detection
-reload(line_detection)
 import line_detection_gwy
 reload(line_detection_gwy)
-from line_detection import GridTiler
-from line_detection_gwy import GwyApp, GwyField
+from line_detection_gwy import GwyApp, GwyField,GridTiler,VMapList,VMap,V
 import gwy, math
+################
+# Parameter    #
+################
+GRID_COLS = 10
 
-GRID_COLS = 20
+if not 'app' in globals():
+    app =GwyApp()
 
-# 0. App
-app = GwyApp()
-app.show_browser()
+vmap_list = result_vmaps
 gui_cancelled = False
-
-# 1. Tile all of chain
-chains_vmap = []
-i = 0
-n = len(result_vmaps)
 app.start_dialog("Calculation", "Setting up grid...")
-tiler = GridTiler(result_vmaps,grid_cols=GRID_COLS)
-tiler.sort_by_angle(reverse=False)
-tiler.sort_by_count(reverse=True)
+
+tiler = GridTiler(vmap_list, grid_cols=GRID_COLS)
+sort_tp = [VMap.SORT_BY_COUNT, VMap.SORT_BY_Y]
+rev_tp = [True,False]
+tiler.sort_by(sort_tp,rev_tp)
 
 app.set_msg_dialog("Tiling all chains...")
+(i, n) = (0, len(vmap_list))
 for i in range(n):
-    chains_vmap.append(tiler.to_be_tiled[i])
     tiler.tiling_add()
     gui_alive = app.set_progress_dialog((i + 1.0)/n)
     if not gui_cancelled and not gui_alive:
         gui_cancelled = True
         break
-tiled_gf = GwyField(tiler.tiled_vmap)
-app.add_field(tiled_gf.field, showit = True, title = 'tiled')
 app.finish_dialog()
 
-result_vmap = tiler.tiled_vmap
-result_vmaps = tiler.to_be_tiled
+tiled_vmap = tiler.tiled_vmap
+sorted_chains = tiler.to_be_tiled
+
+tiled_gf = GwyField(tiled_vmap)
+app.add_field(tiled_gf.field, showit = True, title = 'tiled')
+
 print("# Conditions ")
 print("GRID_COLS (int) : number of grid columns, {}".format(GRID_COLS))
 print("# Result #")
-print("result_vmap (VMap) : tiled vmap")
-print("result_vmaps (list(VMap)) : Sorted list of tiledVMaps")
+print("tiled_vmap (VMap) : tiled vmap")
+print("sorted_chains (VMapList) : Sorted list of chains")
+
+# TODO: sort by y position - drift may change angle of chains from top to bottom.

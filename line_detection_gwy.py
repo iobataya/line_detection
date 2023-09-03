@@ -5,10 +5,10 @@ Line detection classes on Gwyddion console
 2023 Ikuo Obataya, Quantum Desgin Japan
 """
 from os import listdir,makedirs
-import math, random
+import math, random, re
 from os.path import isfile, join, exists,dirname,basename
 import gwy, gtk
-from vectors import V,VMap,VMapList,VMapIO
+from vectors import *
 
 class GwyApp:
     def __init__(self):
@@ -94,7 +94,7 @@ class GwyApp:
         """Show log window GUI of current data
         """
         if field_id == -1:
-            field_id = get_field_id()
+            field_id = self.get_field_id()
         gwy.gwy_app_log_browser_for_channel(self.con, field_id)
 
     def start_dialog(self, title, starting_msg):
@@ -388,7 +388,7 @@ class GwyContainer:
     #endregion
 
 class GwyField:
-    def __init__(self, src_data, pix_sz_V = V(1,1), threshold = 0.1):
+    def __init__(self, src_data, pix_sz_V = V(1,1), threshold=0.2):
         if isinstance(src_data,gwy.DataField):
             # DataField is given
             self.field = src_data
@@ -401,12 +401,11 @@ class GwyField:
             (self.min_value,self.max_value) = self.field.area_get_min_max_mask(
                                                 gwy.DataField(0,0,0,0),gwy.MASK_IGNORE,0,0,self.cols,self.rows)
             self.range_value = self.max_value - self.min_value
-            self.vmap = self.generate_map_from_field(threshold = threshold)
+            self.vmap = self.generate_map_from_field(threshold=threshold)
         elif isinstance(src_data, VMap):
             # VectorMap is given, vector keys are pixelated.
             app = GwyApp()
-            app.start_dialog("Preparing","Preparing gwy.DataField...")
-            (vmin, vmax) = src_data.get_min_max_vectors()
+            (vmin, vmax) = (src_data.min_vec,src_data.max_vec)
             offset_vec = vmin
             diagonal_vec = vmax - vmin
             (offset_x, offset_y) = (offset_vec.x_int(), offset_vec.y_int())
@@ -418,11 +417,8 @@ class GwyField:
             else:
                 self.vmap = src_data.round()
             vecs = self.vmap.vec_list()
-            app.finish_dialog()
 
-            # this takes a long time. shows progress bar
-            gui_cancelled = False
-            app.start_dialog("Create", "Creating gwy.DataField...")
+            # this takes a long time. TODO: to show progress bar
             vecs_cnt = len(vecs)
             for i in range(0,vecs_cnt):
                 vec = vecs[i]
@@ -431,15 +427,9 @@ class GwyField:
                     raise ValueError("({},{}) out of range for the DataField(cols:{}, rows:{})".format(px,py,self.cols,self.rows))
                 val = self.vmap[vec]
                 self.field.area_fill(px, py, 1, 1, val)
-                progress = (i + 1.0) / vecs_cnt
-                gui_alive = app.set_progress_dialog(progress)
-                if not gui_cancelled and not gui_alive:
-                    gui_cancelled = True
-                    break
-            app.finish_dialog()
 
             self.offset = offset_vec
-            (min_vval, max_vval) = self.vmap.get_min_max_values()
+            (min_vval, max_vval) = (self.vmap.min_vecvalue,self.vmap.max_vecvalue)
             self.min_value = self.vmap[min_vval.vector]
             self.max_value = self.vmap[max_vval.vector]
             self.range_value = self.max_value - self.min_value
@@ -455,9 +445,8 @@ class GwyField:
         return "GwyField {} x {}, value range:{} - {}".format(w,h,_min,_max)
     """
     Generates dictionary where key and value are (x,y) tuple and value, respectively.
-    When the threshold is set to 0.5, pixels more than 50% of range.
     """
-    def generate_map_from_field(self, threshold = 0.5):
+    def generate_map_from_field(self, threshold=0.2):
         threshold_signal = self.min_value + threshold * self.range_value
         vmap = VMap()
         (cols,rows) = (self.field.get_xres(),self.field.get_yres())
@@ -494,20 +483,13 @@ class GwyField:
         dfield_g.filter_gaussian(g_pix)
         return GwyField(dfield_g)
 
-    def enhance_chain_pixels(chain,enhXyDic,extr_dfield,max_value=None):
-        if max_value==None:
-            max_val = extr_dfield.get_max()
-        for xy in enhXyDic.keys():
-            (x,y) = xy
-            (px,py) = (x-chain.x_min,y-chain.y_min)
-            v = extr_dfield.get_val(px,py)
-            extr_dfield.area_fill(px,py,1,1,max_value)
-        return extr_dfield
-
     @staticmethod
-    def create_from_VMapList(source):
-        if isinstance(source, VMapList):
-            vmap_list = source
+    def add_vmap(source, idx=-1, showit=True):
+        if isinstance(source, (VMapList,list)):
+            if idx >= 0:
+                vmap_list = VMapList(source[idx])
+            else:
+                vmap_list = VMapList(source)
         else:
             vmap_list = VMapList(source)
         app = GwyApp()
@@ -517,9 +499,9 @@ class GwyField:
             vmap = vmap_list[i]
             all_vmap.add_vmap(vmap)
         new_field = GwyField(all_vmap)
-        id = app.add_field(new_field.field,showit=True,title='Created')
+        id = app.add_field(new_field.field,showit=showit,title='Created')
         app.show_browser()
-        return id
+        return (new_field, id)
 
 
 class GwyVMapListIO():
@@ -529,6 +511,7 @@ class GwyVMapListIO():
     def save(self, filepath, source):
         self.source = source
         self.io.open(filepath,'w',self.source)
+        self.progress = Progress()
         app = GwyApp()
         gui_cancelled = False
         app.start_dialog("Save", "Saving VMap list...")
@@ -542,7 +525,7 @@ class GwyVMapListIO():
         app.finish_dialog()
 
     def load(self,filepath):
-        self.io.open(filepath,'r',self.source)
+        self.io.open(filepath,'r', None)
         app = GwyApp()
         gui_cancelled = False
         app.start_dialog("Load", "Loading VMap list...")
@@ -603,3 +586,65 @@ class GwyNanosurf:
         if "NID" in channels:
             ret_array = ret_array + NID_FWD
         return ret_array
+
+
+def find_chains(app, min_pix,max_pix,gui_cancelled=False):
+    app.start_dialog("Calculation","Getting neighboring...")
+    dfield = app.get_field()
+    gf = GwyField(dfield)
+    vmap = gf.vmap.copy()
+    initial_count = len(vmap)
+    current_count = initial_count
+    neighboring = VMapList()
+    while(current_count > 0):
+        found_vmap = vmap._get_neighboring_from(vmap.first_vec())
+        if len(found_vmap) >= min_pix:
+            neighboring.append(found_vmap)
+        current_count = len(vmap)
+        if len(neighboring) >= max_pix:
+            break
+        progress = initial_count - current_count
+        gui_alive = app.set_progress_dialog((progress + 1.0)/initial_count)
+        if not gui_cancelled and not gui_alive:
+            gui_cancelled = True
+            break
+    app.finish_dialog()
+    return neighboring
+
+def get_vvcache():
+    return VVCache(enable_cache=True)
+
+
+def plot_at_angles(app,dict,step_angle,title='data'):
+    x_real = 180
+    y_values = []
+    target_y_dict = dict
+    total_value = 0
+    for i in range(0,180,step_angle):
+        angle = float(i)
+        if angle in target_y_dict:
+            y_values.append(target_y_dict[angle])
+            total_value += target_y_dict[angle]
+        else:
+            y_values.append(0)
+
+    if total_value == 0:
+        return
+#        raise ValueError("No distinguished linear region in this chain.")
+
+    gwycurve = GwyCurve()
+    gwycurve.add_curve(y_values, x_real=x_real, color_idx=0, desc=title)
+    app.add_curve(gwycurve.gmodel, showit = True)
+
+def draw_lines_at_angles(app, line_results,source_vmap,step_angle,title='Detected lines'):
+    emphasized = source_vmap.copy()
+    for i in range(0, 180, step_angle):
+        angle = float(i)
+        vv_dict = line_results.vv_sum_max_at_angles
+        if angle in vv_dict:
+            val = line_results.sum_at_angles[angle]
+            if val < line_results.avr_sum_z:
+                continue
+            emphasized.add_line(vv_dict[angle], value = val)
+    emphasized_gf = GwyField(emphasized)
+    app.add_field(emphasized_gf.field, showit=True, title=title)

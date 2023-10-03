@@ -12,10 +12,6 @@ from ruamel.yaml import YAML, YAMLError
 from ruamel.yaml.main import round_trip_load as yaml_load, round_trip_dump as yaml_dump
 import yaml
 
-from topostats.logs.logs import LOGGER_NAME
-
-LOGGER = logging.getLogger(LOGGER_NAME)
-
 class LinearMolecule:
     """
     Numpy配列 [y座標配列, x座標配列, シグナル値配列]をインスタンスとして持つ。-> yx_values
@@ -77,17 +73,18 @@ class LinearMolecule:
         for i in range(0,len(y_ar)):
             (y, x) = (y_ar[i], x_ar[i])
             values[i] = labelled_image[y][x]
-        return Molecule(np.array([y_ar,x_ar,values]),mol_idx=mol_idx)
+        return LinearMolecule(np.array([y_ar,x_ar,values]),mol_idx=mol_idx)
 
     @staticmethod
     def create_from_yx_array(y_array,x_array,value=1.0,mol_idx=1):
+        """ create a molecule from y,x list """
         val_array = np.full(len(y_array),value)
-        mol = Molecule(np.array([y_array,x_array,val_array],dtype=[np.int32,np.int32,np.float32]),mol_idx=mol_idx)
+        mol = LinearMolecule(np.array([y_array,x_array,val_array]),mol_idx=mol_idx)
         return mol
 
     def get_displacement_matrix(self):
+        """ Get a displacement matrix """
         # [y座標配列, x座標配列]から転置した[y,x]配列、yxTを使う。
-        # [y,x]をaxis=2としたマトリックスにする。
         m1 = self.yxT.reshape((1,self.count(),2))
         m2 = self.yxT.reshape((self.count(),1,2))
         mv = m1 - m2  # 2点間の全ベクトル
@@ -109,7 +106,7 @@ class LinearMolecule:
         else:
             vectors = self.get_displacement_matrix()
         msq = np.sum(np.square(vectors),axis=2) # y,xを二乗してsum -> 長さ2乗
-        md = np.sqrt(ms) # 平方根を取って距離に。
+        md = np.sqrt(msq) # 平方根を取って距離に。
         length_filtered_mask = np.where(md>=min_length, 1, 0)  # 最小の長さを超えていれば距離, if not 0
         pix_pairs = np.where(length_filtered_mask > 0)
         return pix_pairs,length_filtered_mask

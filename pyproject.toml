@@ -2,5 +2,5 @@
 minversion = "7.0"
 addopts = "--cov --mpl"
 testpaths = [
-    ".","test",
+    ".",
 ]

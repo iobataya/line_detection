@@ -12,39 +12,34 @@ from ruamel.yaml import YAML, YAMLError
 from ruamel.yaml.main import round_trip_load as yaml_load, round_trip_dump as yaml_dump
 import yaml
 
-class LinearMolecule:
-    """
-    Numpy配列 [y座標配列, x座標配列, シグナル値配列]をインスタンスとして持つ。-> yx_values
-    ラベルされたImage、xy配列、から生成する。メソッド間のやり取りには、内部の処理はこのyx_values配列を使う。
-    MatPlotLibでimshowするときだけ展開する。
+class LineDetection:
+    pass
 
-    ※座標配列 - 入出力、描画
-    [y][x] : yx_pos, shape(N,2)
-    [y,x]:   yx_pos.T, shape(2,N)
 
-    ※ベクター配列 - 距離計算, 象限判別
-    [[yx_pos_idx],[yx_pos_idx],[yx_pos]], shape(N,N,2)
+class Molecule:
     """
-    def __init__(self,yx_values, mol_idx=1):
+    Holds pixels by [[y positions],[x positions]], dtype=np.int32
+    """
+    def __init__(self,yx_positions, mol_idx=1):
         self.mol_idx = mol_idx
-        self.orig_yx_values = yx_values
-        self.orig_left = self.orig_x().min()
-        self.orig_top = self.orig_y().min()
-        self.width = int(self.orig_x().max() - self.orig_left + 1)
-        self.height = int(self.orig_y().max() - self.orig_top + 1)
-        self.x = self.orig_x() - self.orig_left
-        self.y = self.orig_y() - self.orig_top
-        self.orig_yxT = np.array([self.orig_y(),self.orig_x()]).T
-        self.yxT = np.array([self.y,self.x]).T
+        self.orig_yx = yx_positions
+        (self.orig_left, self.orig_right) = (self.orig_x().min(), self.orig_x().max())
+        (self.orig_top, self.orig_bottom) = (self.orig_y().min(), self.orig_y().max())
+        self.width = self.orig_right - self.orig_left + 1
+        self.height = self.orig_bottom - self.orig_top + 1
+        if self.width > 127 or self.height > 127:
+            raise IndexError(f"Grain is too large over 127.({self.width},{self.height})")
+        (vec_x, vec_y) = (self.orig_x() - self.orig_left, self.orig_y() - self.orig_top)
+        self.x = vec_x.astype(np.byte)
+        self.y = vec_y.astype(np.byte)
+        self.yxB = np.array([self.y,self.x], dtype=np.byte)
+        self.yxBT = self.yxB.T
 
     def orig_x(self):
-        return self.orig_yx_values[1]
+        return self.orig_yx[1]
 
     def orig_y(self):
-        return self.orig_yx_values[0]
-
-    def values(self):
-        return self.orig_yx_values[2]
+        return self.orig_yx[0]
 
     def get_yx(self, pix_idx):
         return (self.y[pix_idx],self.x[pix_idx])
@@ -52,41 +47,34 @@ class LinearMolecule:
     def get_orig_yx(self,pix_idx):
         return (self.orig_y()[pix_idx], self.orig_x()[pix_idx])
 
-    def get_vector(self, pix_idx0, pix_idx1):
-        return (self.yxT[pix_idx0], self.yxT[pix_idx1])
+    def get_vector(self, pix_idx):
+        return self.yxBT[pix_idx]
 
-    def get_displacement(self, pix_idx0, pix_idx1):
-        return self.yxT[pix_idx0] - self.yxT[pix_idx1]
-
-    def get_orig_vector(self,pix_idx0, pix_idx1):
-        return (self.orig_yxT[pix_idx0], self.orig_yxT[pix_idx1])
+    def get_displacement_vector(self, pix_idx0, pix_idx1):
+        return self.yxBT[pix_idx0] - self.yxBT[pix_idx1]
 
     def count(self):
-        return len(self.x)
+        """ Returns count of pixels """
+        return len(self.orig_x())
 
     @staticmethod
     def create_from_labelled_image(labelled_image, mol_idx=1):
         l = np.where(labelled_image==mol_idx)
-        # prepare nparray of y, x
+        # prepare nparray of y, x from the resulting tuple
         (y_ar, x_ar) = (l[0], l[1])
-        values = np.zeros((len(x_ar),))
-        for i in range(0,len(y_ar)):
-            (y, x) = (y_ar[i], x_ar[i])
-            values[i] = labelled_image[y][x]
-        return LinearMolecule(np.array([y_ar,x_ar,values]),mol_idx=mol_idx)
+        return Molecule(np.array([y_ar,x_ar], dtype=np.int32),mol_idx=mol_idx)
 
     @staticmethod
-    def create_from_yx_array(y_array,x_array,value=1.0,mol_idx=1):
+    def create_from_yx_array(y_array,x_array,mol_idx=1):
         """ create a molecule from y,x list """
-        val_array = np.full(len(y_array),value)
-        mol = LinearMolecule(np.array([y_array,x_array,val_array]),mol_idx=mol_idx)
+        mol = Molecule(np.array([y_array,x_array], dtype=np.int32),mol_idx=mol_idx)
         return mol
 
     def get_displacement_matrix(self):
         """ Get a displacement matrix """
         # [y座標配列, x座標配列]から転置した[y,x]配列、yxTを使う。
-        m1 = self.yxT.reshape((1,self.count(),2))
-        m2 = self.yxT.reshape((self.count(),1,2))
+        m1 = self.yxBT.reshape((1,self.count(),2))
+        m2 = self.yxBT.reshape((self.count(),1,2))
         mv = m1 - m2  # 2点間の全ベクトル
         return mv
 
@@ -120,8 +108,8 @@ class LinearMolecule:
             image[y][x] = 1
         return image
 
-    def get_blank_image(self):
-        return np.zeros((self.height,self.width))
+    def get_blank_image(self, dtype=np.float64):
+        return np.zeros((self.height,self.width),dtype=dtype)
 
     @staticmethod
     def plot_image(image, aspect = 1.0):
@@ -135,60 +123,44 @@ class LinearMolecule:
     def __repr__(self):
         return f"ID:{self.mol_idx}({self.count()}),({self.orig_left},{self.orig_top},{self.width},{self.height})"
 
-    def get_line_mask(self,pix_id1,pix_id2):
+    def get_line_mask(self, pix_id1, pix_id2):
         yx1 = self.get_yx(pix_id1)
         yx2 = self.get_yx(pix_id2)
-        (x1, y1) = (int(yx1[1]), int(yx1[0]))
-        (x2, y2) = (int(yx2[1]), int(yx2[0]))
-        mask = self.get_blank_image()
-        self.draw_line(x1,y1,x2,y2,mask)
+        (x1, y1) = (yx1[1], yx1[0])
+        (x2, y2) = (yx2[1], yx2[0])
+        mask = self.get_blank_image(dtype=np.byte)
+        self.draw_line(x1, y1, x2, y2, mask)
         return mask
 
-    def draw_line(self,x0,y0,x1,y1,np_area):
+    def draw_line(self, x1, y1, x2, y2, np_area):
         """ Returns ndarray drawin the line by 1
         Args:
-            (x0,y0,x1,y1) (int): starting and end point of line
+            (x1,y1,x2,y2) (int): starting and end point of line
             np_area (np.nd_array): nd_array to draw the line as 1
         Returns:
             (np.nd_array): area drawn
         """
-        def _set_pixel(x,y,np_area,value=1):
-            np_area[y][x] = 1
+        def _set_pixel(x, y, np_area, value=1):
+            np_area[y][x] = value
 
-        def _horizontal_line(x0,y0,x1,y1,np_area):
-            dx = abs(x1 - x0)
-            step = 1
-            if x0 > x1:
-                step = -1
-            (x, y) = (x0, y0)
-            for i in range(dx):
-                _set_pixel(x,y,np_area)
-                x += step
-
-            _set_pixel(x1,y1,np_area)
+        def _vertical_line(y1, y2, x, np_area):
+            (i, j) = (min(y1, y2), max(y1, y2) + 1)
+            for y in range(i, j):
+                _set_pixel(x, y, np_area)
             return np_area
 
-        def _vertical_line(x0,y0,x1,y1,np_area):
-            dy = abs(y1 - y0)
-            step = 1
-            if y0 > y1:
-                step = -1
-            (x, y) = (x0, y0)
-            for i in range(dy):
-                _set_pixel(x,y,np_area)
-                y += step
-            _set_pixel(x1,y1,np_area)
+        def _horizontal_line(x1, x2, y, np_area):
+            (i, j) = (min(x1, x2), max(x1, x2) + 1)
+            for x in range(i, j):
+                _set_pixel(x, y, np_area)
             return np_area
 
-        def _bresenham(x0,y0,x1,y1,np_area):
-            """
-            based on
-            https://github.com/encukou/bresenham/blob/master/bresenham.py
-            """
-            (dx, dy) = (x1 - x0, y1 - y0)
+        def _bresenham(x1, y1, x2, y2, np_area):
+            """ https://github.com/encukou/bresenham/blob/master/bresenham.py """
+            (dx, dy) = (x2 - x1, y2 - y1)
             xsign = 1 if dx > 0 else -1
             ysign = 1 if dy > 0 else -1
-            (dx, dy) = (abs(dx),abs(dy))
+            (dx, dy) = (abs(dx), abs(dy))
             if dx > dy:
                 (xx, xy, yx, yy) = (xsign, 0, 0, ysign)
             else:
@@ -197,20 +169,21 @@ class LinearMolecule:
             D = 2*dy - dx
             y = 0
             for x in range(dx + 1):
-                _set_pixel(x0 + x*xx + y*yx, y0 + x*xy + y*yy, np_area)
+                _set_pixel(x1 + x * xx + y * yx, y1 + x * xy + y * yy, np_area)
                 if D >= 0:
                     y += 1
                     D -= 2*dx
                 D += 2*dy
             return np_area
 
-        if x0 == x1 and y0 == y1:
+        if x1 == x2 and y1 == y2: # a point
+            _set_pixel(x1, y1, np_area)
             return np_area
-        if x0 == x1 :  # vertical
-            ret_ndarray = _vertical_line(x0,y0,x1,y1,np_area)
-        elif y0 == y1:  # horizontal
-            ret_ndarray = _horizontal_line(x0,y0,x1,y1,np_area)
-        else:
-            ret_ndarray = _bresenham(x0,y0,x1,y1,np_area)
 
+        if x1 == x2 :  # vertical line
+            ret_ndarray = _vertical_line(y1, y2, x1, np_area)
+        elif y1 == y2:  # horizontal line
+            ret_ndarray = _horizontal_line(x1, x2, y1, np_area)
+        else:
+            ret_ndarray = _bresenham(x1, y1, x2, y2, np_area)
         return ret_ndarray

@@ -1,8 +1,7 @@
-import linedetection
 import pytest
 import numpy as np
 
-from linedetection import LineDetection, Molecule
+from linemol import Molecule, LineDetection
 
 @pytest.fixture
 def mol_1() -> Molecule:

@@ -5,7 +5,7 @@ from datetime import datetime
 import numpy as np
 import pytest
 
-from linedetection import (
+from linemol import (
     LineDetection,
     Molecule,
 )
@@ -19,11 +19,11 @@ def test_init(mol_2:Molecule,mol_from_yx:Molecule) -> None:
     assert len(mol_2.y) == mol_2.count()
     assert mol_2.width == 5
     assert mol_2.height == 3
-    assert mol_2.yxB.dtype == np.byte
+    assert mol_2.yx.dtype == np.int32
     assert mol_from_yx.orig_yx.T[0][YAXIS] == 0
     assert mol_from_yx.orig_yx.T[0][XAXIS] == 10
-    assert mol_from_yx.yxBT[0][YAXIS] == 0
-    assert mol_from_yx.yxBT[0][XAXIS] == 0
+    assert mol_from_yx.yxT[0][YAXIS] == 0
+    assert mol_from_yx.yxT[0][XAXIS] == 0
     with pytest.raises(IndexError):
         y_ar = [0,500]
         x_ar = [10,120]
@@ -47,7 +47,7 @@ def test_get_orig_yx(mol_from_yx:Molecule):
 def test_get_vector(mol_from_yx:Molecule):
     # idx 1: yxB (0,0)
     vec = mol_from_yx.get_vector(1)
-    assert vec.dtype == np.byte
+    assert vec.dtype == np.int32
     assert vec[XAXIS] == 10
     assert vec[YAXIS] == 1
 
@@ -56,7 +56,7 @@ def test_get_displacement_vector(mol_from_yx:Molecule):
     # idx 3: (30,3)
     # disp:  (-30,-3)
     disp_vec = mol_from_yx.get_displacement_vector(0,3)
-    assert disp_vec.dtype == np.byte
+    assert disp_vec.dtype == np.int32
     assert disp_vec[XAXIS] == -30
     assert disp_vec[YAXIS] == -3
 
@@ -106,8 +106,8 @@ def test_get_blank_image():
     mol = Molecule(np.array([[10, 109], [10, 109]]))
     assert mol.width == 100
     assert mol.height == 100
-    blank = mol.get_blank_image(dtype=np.byte)
-    assert blank.dtype == np.byte
+    blank = mol.get_blank_image(dtype=np.int32)
+    assert blank.dtype == np.int32
     assert blank.shape == (100, 100)
 
 def test_str():
@@ -121,7 +121,7 @@ def test_get_line_mask():
 
 def test_draw_line():
     mol = Molecule(np.array([[10, 109], [10, 109]]))
-    blank = mol.get_blank_image(dtype=np.byte)
+    blank = mol.get_blank_image(dtype=np.int32)
     # horizontal
     y = 2
     (x1, x2) = (2, 10)

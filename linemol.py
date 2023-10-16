@@ -14,6 +14,8 @@ from ruamel.yaml.main import round_trip_load as yaml_load, round_trip_dump as ya
 import yaml
 import pandas as pd
 
+
+
 class Molecule:
     """ Molecule class for detection of linear parts
     Holds positions and pixels of molecule, providing methods to analyze by vectors
@@ -78,6 +80,20 @@ class Molecule:
         mol = Molecule(np.array([y_array,x_array], dtype=np.int32),mol_idx=mol_idx)
         return mol
 
+    @staticmethod
+    def create_all_from_labelled_image(labelled_image:np.ndarray, source_image:np.ndarray) -> list:
+        """ create molecule list from labelled image """
+        count = labelled_image.max()
+        mol_list = []
+        for i in range(1,count + 1):
+            mol = Molecule.create_from_labelled_image(
+                labelled_image,
+                mol_idx=i,
+            )
+            mol.set_source_image(source_image)
+            mol_list.append(mol)
+        return mol_list
+
     def get_displacement_matrix(self) -> np.ndarray:
         """ Get a displacement vector matrix """
         # Generate matrix from two identical transposed yxTs.
@@ -132,12 +148,6 @@ class Molecule:
         """ Set a source image of this molecule cropped from src_img"""
         self.src_img = src_img[self.orig_top:self.orig_bottom + 1, self.orig_left:self.orig_right + 1]
 
-    @staticmethod
-    def plot_image(image, aspect = 1.0):
-        fig, ax = plt.subplots(figsize=(4, 4))
-        plt.imshow(image, cmap="afmhot", aspect=aspect)
-        plt.show()
-
     def __str__(self):
         return f"ID:{self.mol_idx}:{self.count()} pixels, (x,y,w,h)=({self.orig_left},{self.orig_top},{self.width},{self.height})"
 
@@ -175,16 +185,52 @@ class Molecule:
             src_img = self.src_img()
         return src_img + (mask * src_img * (factor - 1.0))
 
-    def get_line_mask(self, pix_id1, pix_id2):
-        yx1 = self.get_yx(pix_id1)
-        yx2 = self.get_yx(pix_id2)
-        (x1, y1) = (yx1[1], yx1[0])
-        (x2, y2) = (yx2[1], yx2[0])
-        mask = self.get_blank_image(dtype=np.int32)
-        self.draw_line(x1, y1, x2, y2, mask)
-        return mask
 
-    def draw_line(self, x1, y1, x2, y2, np_area):
+class LineDetection:
+    """ Line detection of molecules
+
+    Arguments:
+        labelled_img(np.ndarray): image of labelled02 from TopoStats find_grains result
+        source_img(np.ndarray): source image of signal (ex. z-height)
+
+    linedet_config:
+        min_len: minimum length of a pixel pair
+        max_len: maximum length of a pixel pair
+        allowed_empty: allowed pixel number of empty
+    """
+    def __init__(self, labelled_img:np.ndarray, source_img:np.ndarray, **linedet_config):
+        self.molecules = Molecule.create_all_from_labelled_image(labelled_img, source_img)
+        self.source_img = source_img
+        self.config = linedet_config
+        self.result_df = None
+        self.statistics = {}
+        self.statistics["molecule count"] =  self.mol_count()
+        if linedet_config == None:
+            self.config["min_len"] = 10
+            self.config["max_len"] = 100
+            self.config["allowed_empty"] = 0
+        else:
+            self.config = linedet_config
+        self.result_df = pd.DataFrame(columns=[
+            "mol_idx","score","pix1","pix2","angle","overlapped"
+        ])
+        self.stat_df = pd.DataFrame(columns=[
+            "mol idx", "pixels", "vector total", "length filtered", "empty filtered"])
+
+# region static methods
+    @staticmethod
+    def plot_image(image, aspect = 1.0):
+        fig, ax = plt.subplots(figsize=(4, 4))
+        plt.imshow(image, cmap="afmhot", aspect=aspect)
+        plt.show()
+
+    @staticmethod
+    def get_blank_image(height, width, dtype=np.float64) -> np.ndarray:
+        """ Generates a blank image ndarray  """
+        return np.zeros((height,width), dtype=dtype)
+
+    @staticmethod
+    def draw_line(x1, y1, x2, y2, np_area) -> np.ndarray:
         """ Returns ndarray drawin the line by 1
         Args:
             (x1,y1,x2,y2) (int): starting and end point of line
@@ -192,6 +238,7 @@ class Molecule:
         Returns:
             (np.nd_array): area drawn
         """
+
         def _set_pixel(x, y, np_area, value=1):
             np_area[y][x] = value
 
@@ -240,39 +287,7 @@ class Molecule:
             ret_ndarray = _bresenham(x1, y1, x2, y2, np_area)
         return ret_ndarray
 
-
-class LineDetection:
-    """ Line detection of molecules
-
-    linedet_config:
-        min_len: minimum length of a pixel pair
-        max_len: maximum length of a pixel pair
-        allowed_empty: allowed pixel number of empty
-    """
-    def __init__(self, molecule_list, source_img, **linedet_config):
-        if len(molecule_list)==0:
-            raise ValueError()
-        if not isinstance(molecule_list[0], Molecule):
-            raise ValueError()
-        self.molecules = molecule_list
-        self.source_img = source_img
-        self.config = linedet_config
-        self.result_df = None
-        self.statistics = {}
-        self.statistics["molecule count"] =  self.mol_count()
-        if linedet_config == None:
-            self.config["min_len"] = 10
-            self.config["max_len"] = 100
-            self.config["allowed_empty"] = 0
-        else:
-            self.config = linedet_config
-        self.result_df = pd.DataFrame(columns=[
-            "mol_idx","score","pix1","pix2","angle","overlapped"
-        ])
-        self.stat_df = pd.DataFrame(columns=[
-            "mol idx", "pixels", "vector total", "length filtered", "empty filtered"])
-
-
+#endregion
 
     def mol_count(self):
         return len(self.molecules)
@@ -331,3 +346,4 @@ class LineDetection:
 
     def run_line_detection(self, mol_idx):
         pass
+

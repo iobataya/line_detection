@@ -2,18 +2,20 @@
 from pathlib import Path
 from unittest import TestCase
 from datetime import datetime
+from typing import List
 import numpy as np
 import pytest
 
+
 from linemol import (
-    LineDetection,
+    LineDetection as ld,
     Molecule,
 )
 
 BASE_DIR = Path.cwd()
-
 (YAXIS, XAXIS) = (0,1)
 
+#region test Molecule
 def test_init(mol_2:Molecule,mol_from_yx:Molecule) -> None:
     assert mol_2.count() == 5
     assert len(mol_2.y) == mol_2.count()
@@ -66,18 +68,35 @@ def test_count(mol_2:Molecule) -> None:
 def test_count(mol_from_yx:Molecule):
     assert mol_from_yx.count() == 4
 
-
-def test_create_from_labelled_image(mol_1) -> None:
+def test_create_from_labelled_image(mol_1: Molecule) -> None:
     assert mol_1.width == 1
     assert mol_1.height == 4
     assert mol_1.mol_idx == 2
 
-def test_create_from_yx_array(mol_from_yx) -> None:
+def test_create_from_yx_array(mol_from_yx: Molecule) -> None:
     assert mol_from_yx.width == 31
     assert mol_from_yx.height == 4
     assert mol_from_yx.mol_idx == 3
 
-def test_get_displacement_matrix(mol_2) -> None:
+def test_create_all_from_labelled_image(mol_list: List[Molecule]) -> None:
+    assert len(mol_list) == 2
+
+    mol1 = mol_list[0]
+    assert mol1.count() == 6
+    assert mol1.width == 6
+    assert mol1.height == 3
+    assert mol1.src_img[0][4] == 3
+
+    mol2 = mol_list[1]
+    assert mol2.count() == 5
+    assert mol2.width == 5
+    assert mol2.height == 2
+    offset_x = mol2.orig_left
+    offset_y = mol2.orig_top
+    assert mol2.src_img[3 - offset_y][5 - offset_x] == 4
+
+
+def test_get_displacement_matrix(mol_2: Molecule) -> None:
     assert mol_2.width == 5
     assert mol_2.height == 3
     matrix = mol_2.get_displacement_matrix()
@@ -119,13 +138,22 @@ def test_repr():
 def test_get_line_mask():
     pass
 
+#endregion
+
+#region test LineDetection
+#region test static methods
+def test_get_blank_image() -> None:
+
+    blank = ld.get_blank_image(200, 100, dtype=np.int32)
+    assert blank.shape[0] == 200
+    assert blank.shape[1] == 100
+
 def test_draw_line():
-    mol = Molecule(np.array([[10, 109], [10, 109]]))
-    blank = mol.get_blank_image(dtype=np.int32)
+    blank = ld.get_blank_image(100, 100, dtype=np.int32)
     # horizontal
     y = 2
     (x1, x2) = (2, 10)
-    mol.draw_line(x1, y, x2, y, blank)
+    ld.draw_line(x1, y, x2, y, blank)
     assert blank[y][x1 - 1] == 0
     assert blank[y][x1    ] == 1
     assert blank[y][x2 - 1] == 1
@@ -136,7 +164,7 @@ def test_draw_line():
     # vertical
     x = 15
     (y1, y2) = (12, 20)
-    mol.draw_line(x, y1, x, y2, blank)
+    ld.draw_line(x, y1, x, y2, blank)
     assert blank[y1 - 1][x] == 0
     assert blank[y1    ][x] == 1
     assert blank[y2 - 1][x] == 1
@@ -147,7 +175,7 @@ def test_draw_line():
     # line
     (x1, y1) = (30, 30)
     (x2, y2) = (50, 50)
-    mol.draw_line(x1, y1, x2, y2, blank)
+    ld.draw_line(x1, y1, x2, y2, blank)
     assert blank[y1 - 1][x1 - 1] == 0
     assert blank[y1    ][x1    ] == 1
     assert blank[y1 + 1][x1 + 1] == 1
@@ -155,5 +183,13 @@ def test_draw_line():
     assert blank[y2    ][x2    ] == 1
     assert blank[y2 + 1][x2 + 1] == 0
     assert blank.sum() == 39
+#endregion
+
+def test_init_linedetection():
+    pass
+
+#endregion
+
+
 
 

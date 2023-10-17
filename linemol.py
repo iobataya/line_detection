@@ -1,11 +1,7 @@
-"""Functions for reading and writing data."""
+"""Classes for detection of linear part of molecule"""
 import os
-import logging
 from datetime import datetime
-import io
-import struct
 from pathlib import Path
-import re
 import matplotlib.pyplot as plt
 
 import numpy as np
@@ -14,13 +10,11 @@ from ruamel.yaml.main import round_trip_load as yaml_load, round_trip_dump as ya
 import yaml
 import pandas as pd
 
-
-
 class Molecule:
-    """ Molecule class for detection of linear parts
-    Holds positions and pixels of molecule, providing methods to analyze by vectors
+    """ Molecule class holds positions and pixels of molecule,
+    providing methods to analyze by vectors
     Each [y, x] coordinate is converted into a vector from the origin.
-    Original coordinate in a source image is stored as orig_variables.
+    Original coordinate in a source image is stored as src_variables.
     It is accessible by index of pixel (pix_idx) in the ndarray.
 
     Arguments:
@@ -28,34 +22,29 @@ class Molecule:
         mol_idx: index of this molecule
     """
     def __init__(self, yx_positions:np.ndarray, mol_idx:int=1, source_image:np.ndarray=None):
+        (XAXIS, YAXIS) = (1, 0)
         self.mol_idx = mol_idx
-        self.orig_yx = yx_positions
-        (self.orig_left, self.orig_right) = (self.orig_x().min(), self.orig_x().max())
-        (self.orig_top, self.orig_bottom) = (self.orig_y().min(), self.orig_y().max())
-        self.width = self.orig_right - self.orig_left + 1
-        self.height = self.orig_bottom - self.orig_top + 1
+        self.src_yx = yx_positions
+        self.src_left = self.src_yx[XAXIS].min()
+        self.src_top = self.src_yx[YAXIS].min()
+        src_right = self.src_yx[XAXIS].max()
+        src_bottom = self.src_yx[YAXIS].max()
+        self.width = src_right - self.src_left + 1
+        self.height = src_bottom - self.src_top + 1
         if self.width > 127 or self.height > 127:
             raise IndexError(f"Grain is too large over 127.({self.width},{self.height})")
-        (vec_x, vec_y) = (self.orig_x() - self.orig_left, self.orig_y() - self.orig_top)
-        self.x = vec_x.astype(np.int32)
-        self.y = vec_y.astype(np.int32)
-        self.yx = np.array([self.y,self.x], dtype=np.int32)
-        self.yxT = self.yx.T
-        self.origin_mask = self.get_image()
+
+        vec_x = self.src_yx[XAXIS] - self.src_left
+        vec_y = self.src_yx[YAXIS] - self.src_top
+        (self.x, self.y) = (vec_x.astype(np.int32), vec_y.astype(np.int32))
+        self.yxT = np.array([self.y, self.x], dtype=np.int32).T
+
+        self.mask = self.get_mask()
         if source_image is not None:
             self.set_source_image(source_image)
 
-    def orig_x(self):
-        return self.orig_yx[1]
-
-    def orig_y(self):
-        return self.orig_yx[0]
-
     def get_yx(self, pix_idx:int):
         return (self.y[pix_idx],self.x[pix_idx])
-
-    def get_orig_yx(self, pix_idx:int):
-        return (self.orig_y()[pix_idx], self.orig_x()[pix_idx])
 
     def get_vector(self, pix_idx:int):
         return self.yxT[pix_idx]
@@ -65,7 +54,7 @@ class Molecule:
 
     def count(self):
         """ Returns count of pixels """
-        return len(self.orig_x())
+        return len(self.x)
 
     @staticmethod
     def create_from_labelled_image(labelled_image:np.ndarray, mol_idx:int=1):
@@ -103,88 +92,26 @@ class Molecule:
         mv = m1 - m2
         return mv
 
-    def filter_by_quadrant(self) -> np.ndarray:
-        """ Generate all possible pixel pairs and filter by quadrants
-        If y is negative, the vector direct in 3 or 4 quadrant.
-        """
-        vectors = self.get_displacement_matrix()
-        result = np.where(vectors < 0)  # find all negative x and y, yielding [[pix_idx],[pix_idx],[idxY_or_idxX],]
-        negative_y = np.where(result[2]==0)  # When idxY_or_idxX == 0, the element is positin of Y.
-        for pix_idx in negative_y[0]:
-            idx0 = result[0][pix_idx]
-            idx1 = result[1][pix_idx]
-            vectors[idx0][idx1] = [0,0] # set vector in 3/4 quad to zero, supposed to be filtered by length
-        return vectors
-
-    def filter_by_length(self, min_length=2, max_length=40):
-        """ Filter all possible pixel pairs by length between them
-        """
-        result_dict = {}
-        # pick up displacement vector in 1+2 quadrants
-        vectors = self.filter_by_quadrant()
-        result_dict["source vectors"] = len(vectors[0])
-        # filter by length
-        msq = np.sum(np.square(vectors),axis=2) # square y and x, then sum them up
-        md = np.sqrt(msq) # get root of it
-        length_filtered_mask = np.where((md >= min_length) & (md <= max_length), 1, 0)
-        pix_pairs = np.where(length_filtered_mask > 0)
-        result_dict["length filtered vectors"] = len(pix_pairs[0])
-        return (pix_pairs, result_dict)
-
-    def get_image(self):
+    def get_mask(self):
         """ Generates a binary image of this molecule"""
-        image = self.get_blank_image()
-        for i in range(0,len(self.x)):
+        image = np.zeros((self.height, self.width), dtype=np.int32)
+        for i in range(0, len(self.x)):
             y = int(self.y[i])
             x = int(self.x[i])
             image[y][x] = 1
         return image
 
-    def get_blank_image(self, dtype=np.float64):
-        """ Generates a blank image ndarray for this molecule """
-        return np.zeros((self.height,self.width),dtype=dtype)
-
     def set_source_image(self, src_img):
         """ Set a source image of this molecule cropped from src_img"""
-        self.src_img = src_img[self.orig_top:self.orig_bottom + 1, self.orig_left:self.orig_right + 1]
+        cropped = src_img[self.src_top:self.src_top + self.height,
+                                 self.src_left:self.src_left + self.width]
+        self.src_img = cropped
 
     def __str__(self):
-        return f"ID:{self.mol_idx}:{self.count()} pixels, (x,y,w,h)=({self.orig_left},{self.orig_top},{self.width},{self.height})"
+        return f"Molecule:{self.mol_idx}:{self.count()} pixels, {self.width} x {self.height}"
 
     def __repr__(self):
-        return f"ID:{self.mol_idx}({self.count()}),({self.orig_left},{self.orig_top},{self.width},{self.height})"
-
-    def get_pix_id_pair(self, vector_ar, vec_idx):
-        (pix_id1,pix_id2) = (vector_ar[0],vector_ar[1])
-        (id1, id2) = (pix_id1[vec_idx], pix_id2[vec_idx])
-        return (id1, id2)
-
-    def score_line(self, vector_ar, vec_idx, allowed_empty=0) -> np.float64:
-        """ Scores by height signal along the line
-
-        Returns:
-            float: sum of height signal or -1 when empty pixels exceeds allowed count
-        """
-        (id1, id2) = self.get_pix_id_pair(vector_ar, vec_idx)
-
-        line_mask = self.get_line_mask(id1, id2)
-        line_pixels = line_mask.sum()
-        masked = self.origin_mask * line_mask
-        overlapped_pixels = masked.sum()
-        empty = line_pixels - overlapped_pixels
-        if empty <= allowed_empty:
-            score_img = line_mask * self.src_img
-            score = score_img.sum()
-            del masked, score_img
-            return score
-        else:
-            return -1
-
-    def get_emphasized(self, mask, factor=2.0, src_img=None):
-        if src_img is None:
-            src_img = self.src_img()
-        return src_img + (mask * src_img * (factor - 1.0))
-
+        return f"{self.mol_idx}({self.count()} px) {self.width} x {self.height}"
 
 class LineDetection:
     """ Line detection of molecules
@@ -217,7 +144,66 @@ class LineDetection:
         self.stat_df = pd.DataFrame(columns=[
             "mol idx", "pixels", "vector total", "length filtered", "empty filtered"])
 
+    def filter_by_length(self, mol:Molecule):
+        """ Filter all possible pixel pairs by length between them
+
+            Returns:
+                Array of pair of vector ID in the molecule
+        """
+        min_length = self.config["min_len"]
+        max_length = self.config["max_len"]
+        result_dict = {}
+        # pick up displacement vector in 1+2 quadrants
+        pix = mol.count()
+        combinations = pix * (pix - 1) / 2
+        result_dict["source vectors"] = combinations
+        vectors = self.filter_by_quadrant(mol)
+        result_dict["only in 12 quad"] = len(vectors[0])
+        # filter by length
+        msq = np.sum(np.square(vectors),axis=2) # square y and x, then sum them up
+        md = np.sqrt(msq) # get root of it
+        length_filtered_mask = np.where((md >= min_length) & (md <= max_length), 1, 0)
+        pix_pairs = np.where(length_filtered_mask > 0)
+        result_dict["length filtered vectors"] = len(pix_pairs[0])
+        return (pix_pairs, result_dict)
+
+    def score_line(self, mol:Molecule, vector_ar, vec_idx) -> np.float64:
+        """ Scores by height signal along the line
+
+        Returns:
+            float: sum of height signal or -1 when empty pixels exceeds allowed count
+        """
+        allowed_empty = self.config["allowed_empty"]
+
+        (id1, id2) = self.get_pix_id_pair(vector_ar, vec_idx)
+        line_mask = self.get_line_mask(id1, id2)
+        line_pixels = line_mask.sum()
+        masked = mol.mask * line_mask
+        overlapped_pixels = masked.sum()
+        empty = line_pixels - overlapped_pixels
+        if empty <= allowed_empty:
+            score_img = line_mask * mol.src_img
+            score = score_img.sum()
+            del masked, score_img
+            return score
+        else:
+            return -1
+
 # region static methods
+    @staticmethod
+    def filter_by_quadrant(mol:Molecule) -> np.ndarray:
+        """ Generate all possible pixel pairs and filter by quadrants
+        If y is negative, the vector direct in 3 or 4 quadrant.
+        """
+        vectors = mol.get_displacement_matrix()
+        result = np.where(vectors < 0)  # find all negative x and y, yielding [[pix_idx],[pix_idx],[idxY_or_idxX],]
+        negative_y = np.where(result[2]==0)  # When idxY_or_idxX == 0, the element is positin of Y.
+        for pix_idx in negative_y[0]:
+            idx0 = result[0][pix_idx]
+            idx1 = result[1][pix_idx]
+            vectors[idx0][idx1] = [0,0] # set vector in 3/4 quad to zero, supposed to be filtered by length
+        return vectors
+
     @staticmethod
     def plot_image(image, aspect = 1.0):
         fig, ax = plt.subplots(figsize=(4, 4))
@@ -228,6 +214,17 @@ class LineDetection:
     def get_blank_image(height, width, dtype=np.float64) -> np.ndarray:
         """ Generates a blank image ndarray  """
         return np.zeros((height,width), dtype=dtype)
+
+    @staticmethod
+    def get_line_mask(mol:Molecule, pix_id1, pix_id2):
+        (XAXIS, YAXIS) = (1, 0)
+        yx1 = mol.get_yx(pix_id1)
+        yx2 = mol.get_yx(pix_id2)
+        (x1, y1) = (yx1[XAXIS], yx1[YAXIS])
+        (x2, y2) = (yx2[XAXIS], yx2[YAXIS])
+        mask = mol.get_blank_image(dtype=np.int32)
+        LineDetection.draw_line(x1, y1, x2, y2, mask)
+        return mask
 
     @staticmethod
     def draw_line(x1, y1, x2, y2, np_area) -> np.ndarray:
@@ -287,6 +284,17 @@ class LineDetection:
             ret_ndarray = _bresenham(x1, y1, x2, y2, np_area)
         return ret_ndarray
 
+    @staticmethod
+    def get_emphasized(mol, mask, factor=2.0, src_img=None):
+        if src_img is None:
+            src_img = mol.src_img()
+        return src_img + (mask * src_img * (factor - 1.0))
+
+    @staticmethod
+    def get_pix_id_pair(vector_ar, vec_idx):
+        (pix_id1, pix_id2) = (vector_ar[0],vector_ar[1])
+        (id1, id2) = (pix_id1[vec_idx], pix_id2[vec_idx])
+        return (id1, id2)
 #endregion
 
     def mol_count(self):

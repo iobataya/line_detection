@@ -131,18 +131,26 @@ def test_repr(mol_1:Molecule):
 
 #region test LineDetection
 
+# TODO: filtering I/O -> check ndarray shape -> DONE
+
 def test_init(linedet0:ld):
     assert linedet0.mol_count() == 2
     assert linedet0.config["min_len"] == 1
     assert linedet0.config["allowed_empty"] == 0
 
 def test_filter_by_length(linedet0:ld):
+    # TODO: get_vector_pairs will return everything !
     mol = linedet0.molecules[0]
     (pix_pairs, results) = linedet0.filter_by_length(mol)
     assert results["source vectors"] == 6 * 5  / 2
     assert results["only in 12 quad"] == 6 * 5 / 2 - 4 - 4 - 1  # TODO: to be checked
 
 #region test static methods
+def test_filter_by_quadrant(mol_1:Molecule):
+    vectors = ld.filter_by_quadrant(mol_1)
+    print(vectors)
+    assert len(vectors[0]) == 3
+
 def test_get_blank_image() -> None:
     blank = ld.get_blank_image(200, 100, dtype=np.int32)
     assert blank.shape[0] == 200

@@ -92,6 +92,30 @@ class Molecule:
         mv = m1 - m2
         return mv
 
+    def get_vector_pairs(self) -> np.ndarray:
+        """ Vector pair idx0, idx1, length and angle
+
+        Returns:
+            nearray of [[[idx0, idx1, length, angle],]
+        """
+        matrix = self.get_displacement_matrix()
+        (count,_,_) = matrix.shape
+        combinations = count * (count - 1) / 2
+        ret_array = []
+        for row in range(0, count):
+            for col in range(row + 1, count):
+                if matrix[row][col][0] >= 0:  # vector in 1/2 quadrant
+                    (idx0, idx1) = (row, col)
+                else:
+                    (idx0, idx1) = (col, row)  # vector from 3/4 quadrant to be swapped
+                y = matrix[idx0][idx1][0]
+                x = matrix[idx0][idx1][1]
+                length = np.sqrt(y*y + x*x)
+                angle = np.rad2deg(np.arctan2(y, x))
+                item = [idx0, idx1, length, angle]
+                ret_array.append(item)
+        return np.array(ret_array)
+
     def get_mask(self):
         """ Generates a binary image of this molecule"""
         image = np.zeros((self.height, self.width), dtype=np.int32)
@@ -189,12 +213,43 @@ class LineDetection:
         else:
             return -1
 
+    def __str__(self):
+        count = f"Line detection object: {len(self.molecules)} molecules."
+        return count
+
 # region static methods
+
+    @staticmethod
+    def _matrix_table(matrix) -> str:
+        """ Returns matrix table as readable format in str """
+        s = [[str(e) for e in row] for row in matrix]
+        lens = [max(map(len, col)) for col in zip(*s)]
+        fmt = '\t'.join('{{:{}}}'.format(x) for x in lens)
+        table = [fmt.format(*row) for row in s]
+        return '\n'.join(table)
+
     @staticmethod
     def filter_by_quadrant(mol:Molecule) -> np.ndarray:
         """ Generate all possible pixel pairs and filter by quadrants
         If y is negative, the vector direct in 3 or 4 quadrant.
+
+        Returns:
+            array of pair of pixel index in yxT array. Note that they are not displacement vectors !
         """
+        matrix = mol.get_displacement_matrix()
+        (count,_,_) = matrix.shape
+        combinations = count * (count - 1) / 2
+        pair_array = []
+        for row in range(0, count):
+            for col in range(row + 1, count):
+                if matrix[row][col][0] < 0:
+                    print(f"{matrix[row][col]} at 3/4 quadrant")
+                else:
+                    print(f"{matrix[row][col]} at 1/2 quadrant")
+                pair = [row, col]
+                pair_array.append(pair)
+        ret_array = np.array(pair_array)
+
         vectors = mol.get_displacement_matrix()
         result = np.where(vectors < 0)  # find all negative x and y, yielding [[pix_idx],[pix_idx],[idxY_or_idxX],]
         negative_y = np.where(result[2]==0)  # When idxY_or_idxX == 0, the element is positin of Y.

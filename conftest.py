@@ -59,6 +59,6 @@ def linedet0() -> LineDetection:
         [8,8,0,4,5,0,4,3],
         [0,0,0,0,0,4,0,0]])
 
-    config = {"min_len":1,"max_len":100,"allowed_empty":0}
+    config = {"min_len":2,"max_len":100,"allowed_empty":0}
     ld = LineDetection(labelled_img, source_img, **config)
     return ld

@@ -50,7 +50,8 @@ class Molecule:
         return self.yxT[pix_idx]
 
     def get_displacement_vector(self, pix_idx0:int, pix_idx1:int):
-        return self.yxT[pix_idx0] - self.yxT[pix_idx1]
+        dvec = self.yxT[pix_idx0] - self.yxT[pix_idx1]
+        return dvec
 
     def count(self):
         """ Returns count of pixels """
@@ -89,18 +90,19 @@ class Molecule:
         m1 = self.yxT.reshape((1,self.count(),2))
         m2 = self.yxT.reshape((self.count(),1,2))
         # Convert to all possible displacement vectors
-        mv = m1 - m2
-        return mv
+        dvecs_matrix = m1 - m2
+        return dvecs_matrix
 
-    def get_vector_pairs(self) -> np.ndarray:
-        """ Vector pair idx0, idx1, length and angle
+    def get_displacement_vectors(self) -> np.ndarray:
+        """ All displacement vectors (pair of pixel) [idx0, idx1]
+          directing toward in 1/2 quadrant
 
         Returns:
-            nearray of [[[idx0, idx1, length, angle],]
+            ndarray of [[idx0, idx1, y, x],]
         """
         matrix = self.get_displacement_matrix()
         (count,_,_) = matrix.shape
-        combinations = count * (count - 1) / 2
+        #combinations = count * (count - 1) / 2
         ret_array = []
         for row in range(0, count):
             for col in range(row + 1, count):
@@ -108,13 +110,10 @@ class Molecule:
                     (idx0, idx1) = (row, col)
                 else:
                     (idx0, idx1) = (col, row)  # vector from 3/4 quadrant to be swapped
-                y = matrix[idx0][idx1][0]
-                x = matrix[idx0][idx1][1]
-                length = np.sqrt(y*y + x*x)
-                angle = np.rad2deg(np.arctan2(y, x))
-                item = [idx0, idx1, length, angle]
-                ret_array.append(item)
-        return np.array(ret_array)
+                dy = matrix[idx0][idx1][0]
+                dx = matrix[idx0][idx1][1]
+                ret_array.append([idx0, idx1, dy, dx])
+        return np.array(ret_array, dtype=np.int32)
 
     def get_mask(self):
         """ Generates a binary image of this molecule"""
@@ -174,44 +173,47 @@ class LineDetection:
             Returns:
                 Array of pair of vector ID in the molecule
         """
-        min_length = self.config["min_len"]
-        max_length = self.config["max_len"]
+        min_len = self.config["min_len"]
+        max_len = self.config["max_len"]
         result_dict = {}
-        # pick up displacement vector in 1+2 quadrants
-        pix = mol.count()
-        combinations = pix * (pix - 1) / 2
-        result_dict["source vectors"] = combinations
-        vectors = self.filter_by_quadrant(mol)
-        result_dict["only in 12 quad"] = len(vectors[0])
-        # filter by length
-        msq = np.sum(np.square(vectors),axis=2) # square y and x, then sum them up
-        md = np.sqrt(msq) # get root of it
-        length_filtered_mask = np.where((md >= min_length) & (md <= max_length), 1, 0)
-        pix_pairs = np.where(length_filtered_mask > 0)
-        result_dict["length filtered vectors"] = len(pix_pairs[0])
-        return (pix_pairs, result_dict)
+        result_dict["mol idx"] = mol.mol_idx
 
-    def score_line(self, mol:Molecule, vector_ar, vec_idx) -> np.float64:
+        dvectors = mol.get_displacement_vectors()  # all vectors
+        dyx = dvectors.T[2:4]  # ndarray of [[dy,], [dx,]]
+        dyx_sq = np.square(dyx).sum(axis=0)
+        lengths = np.sqrt(dyx_sq)
+        filtered_idx = np.where((lengths>=min_len) & (lengths<=max_len))[0]
+        result_dict["length filtered"] = len(filtered_idx)
+        filtered = dvectors.take(filtered_idx, axis=0)
+        return filtered
+
+    def score_lines(self, mol:Molecule, vectors):
+        pass
+
+    def score_line(self, mol:Molecule, idx1, idx2) -> np.float64:
         """ Scores by height signal along the line
 
+        Arguments:
+            mol(Molecule): molecule
+            vectors(ndarray): [y,x]
+
         Returns:
-            float: sum of height signal or -1 when empty pixels exceeds allowed count
+            float: sum of height signal
+                    if empty pixel is greater than allowed pixel, returns negative value of count of empty pixel
         """
         allowed_empty = self.config["allowed_empty"]
-
-        (id1, id2) = self.get_pix_id_pair(vector_ar, vec_idx)
-        line_mask = self.get_line_mask(id1, id2)
+        line_mask = self.get_line_mask(mol, idx1, idx2)
         line_pixels = line_mask.sum()
         masked = mol.mask * line_mask
         overlapped_pixels = masked.sum()
         empty = line_pixels - overlapped_pixels
         if empty <= allowed_empty:
-            score_img = line_mask * mol.src_img
+            score_img = masked * mol.src_img
             score = score_img.sum()
             del masked, score_img
             return score
         else:
-            return -1
+            return -empty
 
     def __str__(self):
         count = f"Line detection object: {len(self.molecules)} molecules."
@@ -228,36 +230,7 @@ class LineDetection:
         table = [fmt.format(*row) for row in s]
         return '\n'.join(table)
 
-    @staticmethod
-    def filter_by_quadrant(mol:Molecule) -> np.ndarray:
-        """ Generate all possible pixel pairs and filter by quadrants
-        If y is negative, the vector direct in 3 or 4 quadrant.
 
-        Returns:
-            array of pair of pixel index in yxT array. Note that they are not displacement vectors !
-        """
-        matrix = mol.get_displacement_matrix()
-        (count,_,_) = matrix.shape
-        combinations = count * (count - 1) / 2
-        pair_array = []
-        for row in range(0, count):
-            for col in range(row + 1, count):
-                if matrix[row][col][0] < 0:
-                    print(f"{matrix[row][col]} at 3/4 quadrant")
-                else:
-                    print(f"{matrix[row][col]} at 1/2 quadrant")
-                pair = [row, col]
-                pair_array.append(pair)
-        ret_array = np.array(pair_array)
-
-        vectors = mol.get_displacement_matrix()
-        result = np.where(vectors < 0)  # find all negative x and y, yielding [[pix_idx],[pix_idx],[idxY_or_idxX],]
-        negative_y = np.where(result[2]==0)  # When idxY_or_idxX == 0, the element is positin of Y.
-        for pix_idx in negative_y[0]:
-            idx0 = result[0][pix_idx]
-            idx1 = result[1][pix_idx]
-            vectors[idx0][idx1] = [0,0] # set vector in 3/4 quad to zero, supposed to be filtered by length
-        return vectors
 
     @staticmethod
     def plot_image(image, aspect = 1.0):
@@ -277,7 +250,7 @@ class LineDetection:
         yx2 = mol.get_yx(pix_id2)
         (x1, y1) = (yx1[XAXIS], yx1[YAXIS])
         (x2, y2) = (yx2[XAXIS], yx2[YAXIS])
-        mask = mol.get_blank_image(dtype=np.int32)
+        mask = LineDetection.get_blank_image(mol.height, mol.width, dtype=np.int32)
         LineDetection.draw_line(x1, y1, x2, y2, mask)
         return mask
 

@@ -94,6 +94,15 @@ def test_get_displacement_matrix(mol_2: Molecule) -> None:
             assert x == 0.0
             assert y == 0.0
 
+def test_get_displacement_vectors(mol_1:Molecule, mol_2:Molecule):
+    vecs1 = mol_1.get_displacement_vectors()
+    assert len(vecs1) == 4 * 3 // 2  # combinations n(n-1)/2
+    assert vecs1.shape == (len(vecs1), 4)  # [[id0, id1, y,x],]
+
+    vecs2 = mol_2.get_displacement_vectors()
+    assert len(vecs2) == 5 * 4 // 2
+    assert vecs2.shape == (len(vecs2), 4)
+
 def test_get_mask(mol_2:Molecule) -> None:
     """ generated mask from following image
        [[0,0,0,2,1],
@@ -131,25 +140,26 @@ def test_repr(mol_1:Molecule):
 
 #region test LineDetection
 
-# TODO: filtering I/O -> check ndarray shape -> DONE
-
 def test_init(linedet0:ld):
     assert linedet0.mol_count() == 2
-    assert linedet0.config["min_len"] == 1
+    assert linedet0.config["min_len"] == 2
     assert linedet0.config["allowed_empty"] == 0
 
 def test_filter_by_length(linedet0:ld):
-    # TODO: get_vector_pairs will return everything !
     mol = linedet0.molecules[0]
-    (pix_pairs, results) = linedet0.filter_by_length(mol)
-    assert results["source vectors"] == 6 * 5  / 2
-    assert results["only in 12 quad"] == 6 * 5 / 2 - 4 - 4 - 1  # TODO: to be checked
+    filtered = linedet0.filter_by_length(mol)
+    assert len(filtered) == 10
+    linedet0.stat_df["mol idx">0]
 
-#region test static methods
-def test_filter_by_quadrant(mol_1:Molecule):
-    vectors = ld.filter_by_quadrant(mol_1)
-    print(vectors)
-    assert len(vectors[0]) == 3
+def test_score_line(linedet0:ld):
+    # TODO:
+    mol = linedet0.molecules[0]
+    filtered = linedet0.filter_by_length(mol)
+    (idx1, idx2) = (filtered[0][0],filtered[0][1])
+    score = linedet0.score_line(mol, idx1, idx2)
+
+
+
 
 def test_get_blank_image() -> None:
     blank = ld.get_blank_image(200, 100, dtype=np.int32)
@@ -202,7 +212,7 @@ def test_draw_line():
     assert blank.sum() == 39
 #endregion
 
-#endregion
+
 
 
 

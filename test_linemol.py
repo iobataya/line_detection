@@ -153,6 +153,7 @@ def test_filter_by_length(ld0:ld):
     len_filtered = ld0.stat_df.loc[ld0.stat_df["mol_idx"]==mol_idx]["len_filtered"].tolist()
     assert len_filtered[0] == 10
 
+
 def test_add_len_filter_stat(ld0:ld):
     mol = ld0.molecules[0]
     mol_idx = mol.mol_idx
@@ -160,6 +161,15 @@ def test_add_len_filter_stat(ld0:ld):
     ld0.add_len_filter_stat(ld0.molecules[0],100,10)
     total = ld0.stat_df.loc[ld0.stat_df["mol_idx"]==mol_idx]["total_vecs"].tolist()
     assert 100 in total
+
+def test_score_lnies(ld0:ld):
+    mol = ld0.molecules[0]
+    filtered = ld0.filter_by_length(mol)
+    result_count = ld0.score_lines(mol,filtered)
+    assert result_count > 0
+    sorted = ld0.score_df.sort_values("score",ascending=False)
+    high_score = sorted["score"].iloc[0]
+    assert high_score == 30
 
 def test_score_line(ld0:ld):
     mol = ld0.molecules[0]
@@ -179,9 +189,6 @@ def test_get_blank_image() -> None:
     blank = ld.get_blank_image(200, 100, dtype=np.int32)
     assert blank.shape[0] == 200
     assert blank.shape[1] == 100
-
-def test_get_line_mask():
-    pass
 
 def test_get_emphasized():
     pass

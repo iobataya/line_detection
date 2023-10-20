@@ -45,9 +45,8 @@ def mol_list() -> List[Molecule]:
     mol_list = Molecule.create_all_from_labelled_image(labelled_img, source_img)
     return mol_list
 
-#TODO: quadrant filter should be checked.
 @pytest.fixture
-def linedet0() -> LineDetection:
+def ld0() -> LineDetection:
     labelled_img = np.array([
         [0,0,0,0,1,1,0,0],
         [0,0,1,1,0,0,0,0],

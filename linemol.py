@@ -161,11 +161,11 @@ class LineDetection:
             self.config["allowed_empty"] = 0
         else:
             self.config = linedet_config
-        self.result_df = pd.DataFrame(columns=[
-            "mol_idx","score","pix1","pix2","angle","overlapped"
-        ])
-        self.stat_df = pd.DataFrame(columns=[
-            "mol idx", "pixels", "vector total", "length filtered", "empty filtered"])
+
+        score_columns = ["mol_idx","score","empty","x1","y1","x2","y2"]
+        self.score_df = pd.DataFrame(columns=score_columns)
+        stat_columns = ["mol_idx", "pixels", "total_vecs", "min_len", "max_len", "len_filtered"]
+        self.stat_df = pd.DataFrame(columns=stat_columns)
 
     def filter_by_length(self, mol:Molecule):
         """ Filter all possible pixel pairs by length between them
@@ -175,22 +175,44 @@ class LineDetection:
         """
         min_len = self.config["min_len"]
         max_len = self.config["max_len"]
-        result_dict = {}
-        result_dict["mol idx"] = mol.mol_idx
-
         dvectors = mol.get_displacement_vectors()  # all vectors
         dyx = dvectors.T[2:4]  # ndarray of [[dy,], [dx,]]
         dyx_sq = np.square(dyx).sum(axis=0)
         lengths = np.sqrt(dyx_sq)
         filtered_idx = np.where((lengths>=min_len) & (lengths<=max_len))[0]
-        result_dict["length filtered"] = len(filtered_idx)
         filtered = dvectors.take(filtered_idx, axis=0)
+
+        self.add_len_filter_stat(mol, len(dvectors[0]), len(filtered))
+
         return filtered
 
-    def score_lines(self, mol:Molecule, vectors):
-        pass
+    def add_len_filter_stat(self, mol:Molecule, total_vecs:np.int32, len_filtered:np.int32):
+        stat = pd.DataFrame([{
+            "mol_idx":mol.mol_idx,
+            "pixels":mol.count(),
+            "min_len":self.config["min_len"],
+            "max_len":self.config["max_len"],
+            "total_vecs":total_vecs,
+            "len_filtered":len_filtered
+        }])
+        self.stat_df= pd.concat([self.stat_df,stat], axis=0, ignore_index=True)
 
-    def score_line(self, mol:Molecule, idx1, idx2) -> np.float64:
+
+    def score_lines(self, mol:Molecule, vectors, ignore_empty=True):
+        # score_columns = ["mol_idx","score","empty","x1","y1","x2","y2"]
+        return
+        (yx1, yx2) = (mol.yxT[idx1], mol.yxT[idx2])
+        (x1, y1) = (yx1[1], yx1[0])
+        (x2, y2) = (yx2[1], yx1[0])
+        score_row = pd.DataFrame([{
+            "mol_idx":mol.mol_idx,
+            "score":score,
+            "empty":empty,
+            "x1":x1, "y1":y1, "x2":x2, "y2":y2
+        }])
+        self.score_df = pd.concat([self.score_df,score_row], axis=0, ignore_index=True)
+
+    def score_line(self, mol:Molecule, x1, y1, x2, y2) -> np.float64:
         """ Scores by height signal along the line
 
         Arguments:
@@ -198,11 +220,11 @@ class LineDetection:
             vectors(ndarray): [y,x]
 
         Returns:
-            float: sum of height signal
-                    if empty pixel is greater than allowed pixel, returns negative value of count of empty pixel
+            float:  sum of height signal
+            int:    empty pixels, negative value if not allowed.
         """
         allowed_empty = self.config["allowed_empty"]
-        line_mask = self.get_line_mask(mol, idx1, idx2)
+        line_mask = LineDetection.draw_line(x1, y1, x2, y2, mol.height, mol.width)
         line_pixels = line_mask.sum()
         masked = mol.mask * line_mask
         overlapped_pixels = masked.sum()
@@ -211,9 +233,12 @@ class LineDetection:
             score_img = masked * mol.src_img
             score = score_img.sum()
             del masked, score_img
-            return score
+            return (score, empty)
         else:
-            return -empty
+            return (0, -empty)
+
+    def update_stat_df(self, col:str, value):
+        pass
 
     def __str__(self):
         count = f"Line detection object: {len(self.molecules)} molecules."
@@ -250,36 +275,34 @@ class LineDetection:
         yx2 = mol.get_yx(pix_id2)
         (x1, y1) = (yx1[XAXIS], yx1[YAXIS])
         (x2, y2) = (yx2[XAXIS], yx2[YAXIS])
-        mask = LineDetection.get_blank_image(mol.height, mol.width, dtype=np.int32)
-        LineDetection.draw_line(x1, y1, x2, y2, mask)
-        return mask
+        return LineDetection.draw_line(x1, y1, x2, y2, mol.height,mol.width)
 
     @staticmethod
-    def draw_line(x1, y1, x2, y2, np_area) -> np.ndarray:
-        """ Returns ndarray drawin the line by 1
+    def draw_line(x1, y1, x2, y2, height, width) -> np.ndarray:
+        """ Returns binary image of line in a defined size
         Args:
             (x1,y1,x2,y2) (int): starting and end point of line
             np_area (np.nd_array): nd_array to draw the line as 1
         Returns:
             (np.nd_array): area drawn
         """
-
-        def _set_pixel(x, y, np_area, value=1):
+        np_area = np.zeros((height,width), dtype=np.int32)
+        def _set_pixel(x, y, value=1):
             np_area[y][x] = value
 
-        def _vertical_line(y1, y2, x, np_area):
+        def _vertical_line(y1, y2, x):
             (i, j) = (min(y1, y2), max(y1, y2) + 1)
             for y in range(i, j):
-                _set_pixel(x, y, np_area)
+                _set_pixel(x, y)
             return np_area
 
-        def _horizontal_line(x1, x2, y, np_area):
+        def _horizontal_line(x1, x2, y):
             (i, j) = (min(x1, x2), max(x1, x2) + 1)
             for x in range(i, j):
-                _set_pixel(x, y, np_area)
+                _set_pixel(x, y)
             return np_area
 
-        def _bresenham(x1, y1, x2, y2, np_area):
+        def _bresenham(x1, y1, x2, y2):
             """modified from https://github.com/encukou/bresenham/blob/master/bresenham.py """
             (dx, dy) = (x2 - x1, y2 - y1)
             xsign = 1 if dx > 0 else -1
@@ -293,7 +316,7 @@ class LineDetection:
             D = 2*dy - dx
             y = 0
             for x in range(dx + 1):
-                _set_pixel(x1 + x * xx + y * yx, y1 + x * xy + y * yy, np_area)
+                _set_pixel(x1 + x * xx + y * yx, y1 + x * xy + y * yy)
                 if D >= 0:
                     y += 1
                     D -= 2*dx
@@ -301,15 +324,15 @@ class LineDetection:
             return np_area
 
         if x1 == x2 and y1 == y2: # a point
-            _set_pixel(x1, y1, np_area)
+            _set_pixel(x1, y1)
             return np_area
 
         if x1 == x2 :  # vertical line
-            ret_ndarray = _vertical_line(y1, y2, x1, np_area)
+            ret_ndarray = _vertical_line(y1, y2, x1)
         elif y1 == y2:  # horizontal line
-            ret_ndarray = _horizontal_line(x1, x2, y1, np_area)
+            ret_ndarray = _horizontal_line(x1, x2, y1)
         else:
-            ret_ndarray = _bresenham(x1, y1, x2, y2, np_area)
+            ret_ndarray = _bresenham(x1, y1, x2, y2)
         return ret_ndarray
 
     @staticmethod
@@ -372,10 +395,6 @@ class LineDetection:
         df.reset_index(inplace=True, drop=True) # re-indexing in place
         df["r_angle"] = df["angle"] - (df["angle"] % 5.0)
         self.result_df.append(df)
-
-    #TODO
-    # score line - it uses many of Molecule instance. score in the class.
-    #
 
     def get_angle_dist(self, mol_idx):
         pass

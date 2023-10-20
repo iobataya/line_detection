@@ -140,26 +140,40 @@ def test_repr(mol_1:Molecule):
 
 #region test LineDetection
 
-def test_init(linedet0:ld):
-    assert linedet0.mol_count() == 2
-    assert linedet0.config["min_len"] == 2
-    assert linedet0.config["allowed_empty"] == 0
+def test_init(ld0:ld):
+    assert ld0.mol_count() == 2
+    assert ld0.config["min_len"] == 2
+    assert ld0.config["allowed_empty"] == 0
 
-def test_filter_by_length(linedet0:ld):
-    mol = linedet0.molecules[0]
-    filtered = linedet0.filter_by_length(mol)
+def test_filter_by_length(ld0:ld):
+    mol = ld0.molecules[0]
+    mol_idx = mol.mol_idx
+    filtered = ld0.filter_by_length(mol)
     assert len(filtered) == 10
-    linedet0.stat_df["mol idx">0]
+    len_filtered = ld0.stat_df.loc[ld0.stat_df["mol_idx"]==mol_idx]["len_filtered"].tolist()
+    assert len_filtered[0] == 10
 
-def test_score_line(linedet0:ld):
-    # TODO:
-    mol = linedet0.molecules[0]
-    filtered = linedet0.filter_by_length(mol)
-    (idx1, idx2) = (filtered[0][0],filtered[0][1])
-    score = linedet0.score_line(mol, idx1, idx2)
+def test_add_len_filter_stat(ld0:ld):
+    mol = ld0.molecules[0]
+    mol_idx = mol.mol_idx
+    filtered = ld0.filter_by_length(ld0.molecules[0])
+    ld0.add_len_filter_stat(ld0.molecules[0],100,10)
+    total = ld0.stat_df.loc[ld0.stat_df["mol_idx"]==mol_idx]["total_vecs"].tolist()
+    assert 100 in total
 
-
-
+def test_score_line(ld0:ld):
+    mol = ld0.molecules[0]
+    ld0.config["allowed_empty"] = 10
+    (score, _) = ld0.score_line(mol, 0, 2, 1, 2)
+    assert score == 16
+    (score, empty) = ld0.score_line(mol, 0, 0, 5, 0)
+    assert score == 7
+    assert empty == 4
+    # allowed empty check
+    ld0.config["allowed_empty"] = 3
+    (score, empty) = ld0.score_line(mol, 0, 0, 5, 0)
+    assert score == 0
+    assert empty == -4
 
 def test_get_blank_image() -> None:
     blank = ld.get_blank_image(200, 100, dtype=np.int32)
@@ -176,40 +190,42 @@ def test_filter_by_quadrant():
     pass
 
 def test_draw_line():
-    blank = ld.get_blank_image(100, 100, dtype=np.int32)
     # horizontal
     y = 2
+    (h, w) = (4, 12)
     (x1, x2) = (2, 10)
-    ld.draw_line(x1, y, x2, y, blank)
-    assert blank[y][x1 - 1] == 0
-    assert blank[y][x1    ] == 1
-    assert blank[y][x2 - 1] == 1
-    assert blank[y][x2    ] == 1
-    assert blank[y][x2 + 1] == 0
-    assert blank.sum() == 9
+    mask = ld.draw_line(x1, y, x2, y, h, w)
+    assert mask[y][x1 - 1] == 0
+    assert mask[y][x1    ] == 1
+    assert mask[y][x2 - 1] == 1
+    assert mask[y][x2    ] == 1
+    assert mask[y][x2 + 1] == 0
+    assert mask.sum() == 9
 
     # vertical
     x = 15
+    (h, w) = (22,17)
     (y1, y2) = (12, 20)
-    ld.draw_line(x, y1, x, y2, blank)
-    assert blank[y1 - 1][x] == 0
-    assert blank[y1    ][x] == 1
-    assert blank[y2 - 1][x] == 1
-    assert blank[y2    ][x] == 1
-    assert blank[y2 + 1][x] == 0
-    assert blank.sum() == 18
+    mask = ld.draw_line(x, y1, x, y2, h, w)
+    assert mask[y1 - 1][x] == 0
+    assert mask[y1    ][x] == 1
+    assert mask[y2 - 1][x] == 1
+    assert mask[y2    ][x] == 1
+    assert mask[y2 + 1][x] == 0
+    assert mask.sum() == 9
 
     # line
+    (h, w) = (100, 100)
     (x1, y1) = (30, 30)
     (x2, y2) = (50, 50)
-    ld.draw_line(x1, y1, x2, y2, blank)
-    assert blank[y1 - 1][x1 - 1] == 0
-    assert blank[y1    ][x1    ] == 1
-    assert blank[y1 + 1][x1 + 1] == 1
-    assert blank[y2 - 1][x2 - 1] == 1
-    assert blank[y2    ][x2    ] == 1
-    assert blank[y2 + 1][x2 + 1] == 0
-    assert blank.sum() == 39
+    mask = ld.draw_line(x1, y1, x2, y2, h, w)
+    assert mask[y1 - 1][x1 - 1] == 0
+    assert mask[y1    ][x1    ] == 1
+    assert mask[y1 + 1][x1 + 1] == 1
+    assert mask[y2 - 1][x2 - 1] == 1
+    assert mask[y2    ][x2    ] == 1
+    assert mask[y2 + 1][x2 + 1] == 0
+    assert mask.sum() == 21
 #endregion
 
 

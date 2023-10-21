@@ -191,7 +191,7 @@ class LineDetection:
         filtered_idx = np.where((lengths>=min_len) & (lengths<=max_len))[0]
         filtered = dvectors.take(filtered_idx, axis=0)
 
-        self.add_len_filter_stat(mol, len(dvectors[0]), len(filtered))
+        self.add_len_filter_stat(mol, len(dvectors.T), len(filtered))
 
         return filtered
 
@@ -273,20 +273,53 @@ class LineDetection:
         else:
             return (0, -empty)
 
+    def save_score_pkl(self, filename, with_config=False):
+        """ Save score DataFrame
+        Arguments:
+            filename(str): filename to save
+                            extension of .pkl or compressed types like .pkl.gz are acceptable
+            with_config(bool): if True, filtering configs are added
+        """
+        path = Path(filename)
+        if not with_config:
+            savename = str(path)
+        else:
+            postfix = f'_{self.config["min_len"]}_{self.config["max_len"]}_{self.config["allowed_empty"]}'
+            savename = str(path.stem + postfix + ".pkl")
+        self.score_df.to_pickle(savename)
+
     def __str__(self):
-        count = f"Line detection object: {len(self.molecules)} molecules."
-        return count
+        mol_count = len(self.molecules)
+        count = f"Line detection object: {mol_count} molecules."
+        score_rows = len(self.score_df)
+        row =  f"Calculated score rows: {score_rows}"
+        return count + row
 
 # region static methods
 
     @staticmethod
-    def _matrix_table(matrix) -> str:
+    def _matrix_table(matrix, row_title=[], col_title=[]) -> str:
         """ Returns matrix table as readable format in str """
-        s = [[str(e) for e in row] for row in matrix]
-        lens = [max(map(len, col)) for col in zip(*s)]
-        fmt = '\t'.join('{{:{}}}'.format(x) for x in lens)
-        table = [fmt.format(*row) for row in s]
-        return '\n'.join(table)
+        (r, c, _) = matrix.shape
+        if len(row_title) != r:
+            row_title = list(map(str, [*range(r)]))
+        else:
+            row_title = [str(rt) for rt in row_title]
+        if len(col_title) != c:
+            col_title = list(map(str, [*range(c)]))
+        else:
+            col_title = [str(ct) for ct in col_title]
+        s = [[str(e) for e in row] for row in matrix]  # convert to str
+        [r.insert(0,t+"|") for t,r in zip(row_title,s)] # insert a header column
+        lens = [max(map(len, col)) for col in zip(*s)]  # get max length for columns
+        fmt = '\t'.join('{{:{}}}'.format(x) for x in lens)  # format of columns
+        rows = [fmt.format(*row) for row in s] # combine columns by format
+        table = '\n'.join(rows) # combine rows
+        hc_w = max(map(len, row_title))
+        t_w = max(map(len, rows))+4
+        h1 = str(' '*hc_w) + '|\t' + str('\t'.join(col_title)) + '\n'
+        h2 = str("-"*hc_w) + "+" + str("-"*t_w) + '\n'
+        return h1 + h2 + table
 
     @staticmethod
     def plot_image(image, aspect = 1.0):

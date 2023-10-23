@@ -116,6 +116,23 @@ class Molecule:
                 ret_array.append([idx0, idx1, dy, dx])
         return np.array(ret_array, dtype=np.int32)
 
+    def get_cross_product_of_line(self, px_id1, px_id2, px_id3, px_id4):
+        (y1, x1) = self.get_yx(px_id1)
+        (y2, x2) = self.get_yx(px_id2)
+        (y3, x3) = self.get_yx(px_id3)
+        (y4, x4) = self.get_yx(px_id4)
+        (dx1, dy1) = (x2 - x1, y2 - y1)
+        (dx2, dy2) = (x4 - x3, y4 - y3)
+        return dx1 * dy2 - dx2 * dy1
+
+    def rect_overlaps(self, px_id1, px_id2, px_id3, px_id4):
+        (y1, x1) = self.get_yx(px_id1)
+        (y2, x2) = self.get_yx(px_id2)
+        (y3, x3) = self.get_yx(px_id3)
+        (y4, x4) = self.get_yx(px_id4)
+        return (max(x1,x3) <= min(x2, x4)) and (max(y1, y3) < min(y2,y4))
+
+
     def get_blank(self):
         return np.zeros((self.height, self.width), dtype=np.int32)
 
@@ -168,6 +185,7 @@ class LineDetection:
 
         self.height = labelled_img.shape[0]
         self.width = labelled_img.shape[1]
+        self.line_cache = {}
 
         self.config = linedet_config
         self.config.setdefault("min_len", 5)
@@ -179,8 +197,9 @@ class LineDetection:
 
         self.score_columns = ["mol_idx","score","empty","x1","y1","x2","y2","length","angle"]
         self.score_df = pd.DataFrame(columns=self.score_columns)
-        self.stat_columns = ["mol_idx", "pixels", "total_vecs", "min_len", "max_len", "max_pix","len_filtered","score_cutoff"]
+        self.stat_columns = ["mol_idx", "pixels", "total_vecs", "len_filtered","total_lines", "min_len", "max_len", "max_pix","score_cutoff"]
         self.stat_df = pd.DataFrame(columns=self.stat_columns)
+
 
     def filter_by_length(self, mol:Molecule) -> np.ndarray:
         """ Filter all possible pixel pairs by length between them
@@ -194,9 +213,10 @@ class LineDetection:
             comb = mol.count() * (mol.count() - 1) // 2
             self._add_len_filter_stat(mol, comb, 0)
             return None
+
+        # calculate length using dy, dx
         min_len = self.config["min_len"]
         max_len = self.config["max_len"]
-
         dvectors = mol.get_displacement_vectors()  # all vectors
         dyx = dvectors.T[2:4]  # ndarray of [[dy,], [dx,]]
         dyx_sq = np.square(dyx).sum(axis=0)
@@ -207,7 +227,7 @@ class LineDetection:
 
         return filtered
 
-    def _add_len_filter_stat(self, mol:Molecule, total_vecs:np.int32, len_filtered:np.int32):
+    def _add_len_filter_stat(self, mol:Molecule, total_vecs:int, len_filtered:int):
         stat = pd.DataFrame([{
             "mol_idx":mol.mol_idx,
             "pixels":mol.count(),
@@ -218,6 +238,66 @@ class LineDetection:
             "len_filtered":len_filtered
         }])
         self.stat_df= pd.concat([self.stat_df,stat], axis=0, ignore_index=True)
+
+    def filter_by_overlapping(self, mol:Molecule, filtered_vecs:np.ndarray) -> np.ndarray:
+        """ Find overlapped lines to eliminate in the array
+            Argument:
+                Molecule
+
+            Returns:
+                filtered DataFrame
+                Array of pair of pixel ID in the molecule and displacement vector as dy, dx
+                [idx1, idx2, dy, dx]
+                If none of returning vectors, returns None
+
+            TODO: Very slow to proceed.
+
+        # Eliminate overlapped vectors that are completely covered with by a longer vector
+        dvec_count = len(filtered)
+        checked_lines = np.array((dvec_count,dvec_count))
+
+        """
+        px_ids1 = filtered_vecs.T[0]
+        px_ids2 = filtered_vecs.T[1]
+        line_count = len(px_ids1)
+        covered = set()
+        for i in range(line_count):
+            if i in covered:
+                continue
+            line_i = None
+            for j in range(i + 1, line_count):
+                if j in covered:
+                    continue
+                cross = mol.get_cross_product_of_line(px_ids1[i], px_ids2[i],px_ids1[j], px_ids2[j])
+                if cross != 0:
+                    continue
+                overlaps_rect = mol.rect_overlaps(px_ids1[i],px_ids2[i], px_ids1[j], px_ids2[j])
+                if not overlaps_rect:
+                    continue
+                if line_i is None:
+                    line_i = LineDetection.draw_line_by_id(mol, px_ids1[i],px_ids2[i], mol.height, mol.width)
+                count_i = line_i.sum()
+                line_j = LineDetection.draw_line_by_id(mol, px_ids1[j],px_ids2[j], mol.height, mol.width)
+                count_j = line_j.sum()
+                shorter = min(count_i, count_j)
+                if (line_i & line_j).sum() == shorter:
+                    if line_i.sum() < line_j.sum():
+                        covered.add(i)  # line_i is covered with line_j
+                    else:
+                        covered.add(j)  # line_j is covered with line_i
+        covers = list(set(range(line_count)) - covered)
+        filtered = filtered_vecs.take(covers,axis=0)
+
+        row_idx = self.stat_df.loc[self.stat_df["mol_idx"] == mol.mol_idx].index.to_list()
+        if len(row_idx) > 0:
+            idx = row_idx[0]
+            self.stat_df.iloc[idx, self.stat_df.columns.get_loc("total_lines")] = len(filtered)
+        return filtered
+
+
+    def __add_overlap_filter_stat(self, mol:Molecule, overlapped:int):
+        pass
+
 
     def score_lines(self, mol:Molecule, filtered_vecs):
         """ Score all lines of the molecule
@@ -264,7 +344,7 @@ class LineDetection:
         self.score_df = pd.concat([self.score_df,cutoff_df], axis=0, ignore_index=True)
         return line_count
 
-    def score_line(self, mol:Molecule, x1, y1, x2, y2) -> np.float64:
+    def score_line(self, mol:Molecule, x1, y1, x2, y2, use_cache=True) -> np.float64:
         """ Scores by height signal along the line
 
         Arguments:
@@ -276,7 +356,10 @@ class LineDetection:
             int:    empty pixels, negative value if not allowed.
         """
         allowed_empty = self.config["allowed_empty"]
-        line_mask = LineDetection.draw_line(x1, y1, x2, y2, mol.height, mol.width)
+        if use_cache:
+            line_mask = self._get_line_cache(mol, x1, y1, x2, y2)
+        else:
+            line_mask = LineDetection.draw_line(x1, y1, x2, y2, mol.height, mol.width)
         line_pixels = line_mask.sum()
         masked = mol.mask * line_mask
         overlapped_pixels = masked.sum()
@@ -305,6 +388,7 @@ class LineDetection:
         self.score_df.to_pickle(savename)
 
     def overlay_lines(self, num_lines=1, factor=1.2):
+        """ Image of all lines of highest score of a molecule """
         src = self.source_img
         overlay = LineDetection.get_blank_image(self.height,self.width)
         if len(self.score_df)==0:
@@ -325,6 +409,46 @@ class LineDetection:
             overlay = overlay + (lines / num_lines)
         return overlay + src
 
+    def _get_line_cache(self, mol:Molecule, x1, y1, x2, y2):
+        (dx, dy) = (x1 - x2, y1 - y2)
+        (line, offset_x, offset_y) = self._get_disp_line_cache(dx, dy)
+        ret_line = mol.get_blank()
+        if x1 < x2:
+            (start_x, start_y) = (x1 - offset_x, y1 - offset_y)
+        else:
+            (start_x, start_y) = (x2 - offset_x, y2 - offset_y)
+        end_x = start_x + line.shape[1]
+        end_y = start_y + line.shape[0]
+
+        np.copyto(ret_line[start_y:end_y, start_x:end_x], line)
+        return ret_line
+
+    def _get_disp_line_cache(self, dx, dy):
+        """ Try to get displacement line, if None, draw a displacement line
+        """
+        if (dx,dy) in self.line_cache:
+            return self.line_cache[(dx,dy)]
+        (h, w) = (abs(dy)+1, abs(dx)+1)
+        if dx * dy >= 0:
+            if dx < 0:
+                #quad = 3
+                line = LineDetection.draw_line(0,0,-dx,-dy,h,w)
+                (offset_x, offset_y) = (-dx, -dy)
+            else:
+                #quad = 1
+                line = LineDetection.draw_line(0,0,dx,dy,h,w)
+                (offset_x, offset_y) = (0,0)
+        else:
+            if dx < 0:
+                #quad = 2
+                line = LineDetection.draw_line(-dx,0,0,dy,h,w)
+                (offset_x, offset_y) = (-dx, 0)
+            else:
+                #quad = 4
+                line = LineDetection.draw_line(dx,0,0,-dy,h,w)
+                (offset_x, offset_y) = (0, -dy)
+        self.line_cache[(dx,dy)] = line
+        return (line, offset_x, offset_y)
 
     def __str__(self):
         mol_count = len(self.molecules)
@@ -370,6 +494,15 @@ class LineDetection:
         """ Generates a blank image ndarray  """
         return np.zeros((height,width), dtype=dtype)
 
+    @staticmethod
+    def draw_line_by_id(mol:Molecule, pidx1:int, pidx2:int, height:int, width) -> np.ndarray:
+        (y1, x1) = mol.get_yx(pidx1)
+        (y2, x2) = mol.get_yx(pidx2)
+        return LineDetection.draw_line(x1, y1, x2, y2, height, width)
+
+    @staticmethod
+    def draw_line_pos(x1, y1, x2, y2) -> np.ndarray:
+        pass
 
     @staticmethod
     def draw_line(x1, y1, x2, y2, height, width) -> np.ndarray:
@@ -380,7 +513,7 @@ class LineDetection:
         Returns:
             (np.nd_array): area drawn
         """
-        np_area = np.zeros((height,width), dtype=np.int32)
+        np_area = np.zeros((height,width), dtype=bool)
         def _set_pixel(x, y, value=1):
             np_area[y][x] = value
 

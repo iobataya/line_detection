@@ -158,11 +158,11 @@ def test_add_len_filter_stat(ld0:ld):
     mol = ld0.molecules[0]
     mol_idx = mol.mol_idx
     filtered = ld0.filter_by_length(ld0.molecules[0])
-    ld0.add_len_filter_stat(ld0.molecules[0],100,10)
+    ld0._add_len_filter_stat(ld0.molecules[0],100,10)
     total = ld0.stat_df.loc[ld0.stat_df["mol_idx"]==mol_idx]["total_vecs"].tolist()
     assert 100 in total
 
-def test_score_lnies(ld0:ld):
+def test_score_lines(ld0:ld):
     mol = ld0.molecules[0]
     filtered = ld0.filter_by_length(mol)
     result_count = ld0.score_lines(mol,filtered)
@@ -233,6 +233,41 @@ def test_draw_line():
     assert mask[y2    ][x2    ] == 1
     assert mask[y2 + 1][x2 + 1] == 0
     assert mask.sum() == 21
+
+def test_get_disp_line_cache(ld0:ld):
+    (line1, offset_x, offset_y) = ld0._get_disp_line_cache(10,10)
+    assert type(line1) == np.ndarray
+    assert (10,10) in ld0.line_cache
+    assert (offset_x, offset_y) == (0, 0)
+    assert line1[10][10] == True
+
+    (line2,offset_x, offset_y) = ld0._get_disp_line_cache(-10,10)
+    assert (-10,10) in ld0.line_cache
+    assert (offset_x, offset_y) == (10,0)
+    assert line2[0][10] == True
+
+    (line3,offset_x, offset_y) = ld0._get_disp_line_cache(-10,-10)
+    assert (offset_x, offset_y) == (10, 10)
+    assert line3[10][10] == True
+
+    (line4, offset_x, offset_y) = ld0._get_disp_line_cache(10,-10)
+    assert (offset_x, offset_y) == (0, 10)
+    assert line4[0][10] == True
+    assert np.array_equiv(line1, line3)
+    assert np.array_equiv(line2, line4)
+
+    assert len(ld0.line_cache) == 4
+
+def test_get_line_cache(ld0:ld):
+    mol = ld0.molecules[2]  # two pixels at (5,2) and (3,3)
+    line = ld0._get_line_cache(mol,5,2,3,3)
+    expected1 = ld.draw_line(3,3,5,2,4,8)
+    assert np.array_equiv(expected1, line)
+    assert len(ld0.line_cache) == 1
+
+
+
+
 #endregion
 
 

@@ -152,60 +152,72 @@ class LineDetection:
         source_img(np.ndarray): source image of signal (ex. z-height)
 
     linedet_config:
-        min_len: minimum length of a pixel pair
-        max_len: maximum length of a pixel pair
-        allowed_empty: allowed pixel number of empty
-        record_neg_empty: record score even if empty > allowed empty
+        min_len: minimum length of a pixel pair (5)
+        max_len: maximum length of a pixel pair (50)
+        max_pix: maximum pixesl count (500)
+        allowed_empty: allowed pixel number of empty (1)
+        record_neg_empty: record score even if empty count>allowed empty (False)
+        score_cutoff: cutoff limit of normalized score(1.0)
     """
     def __init__(self, labelled_img:np.ndarray, source_img:np.ndarray, **linedet_config):
-        self.molecules = Molecule.create_all_from_labelled_image(labelled_img, source_img)
+        self.labelled_img = labelled_img
         self.source_img = source_img
+        if labelled_img.shape != source_img.shape:
+            raise TypeError("Shape of labelled_img and source_image are different.")
+        self.molecules = Molecule.create_all_from_labelled_image(labelled_img, source_img)
+
+        self.height = labelled_img.shape[0]
+        self.width = labelled_img.shape[1]
 
         self.config = linedet_config
         self.config.setdefault("min_len", 5)
         self.config.setdefault("max_len", 50)
+        self.config.setdefault("max_pix", 500)
         self.config.setdefault("allowed_empty", 1)
         self.config.setdefault("record_neg_empty", False)
+        self.config.setdefault("score_cutoff", 1.0)
 
-        self.score_df = self._create_score_df()
-        stat_columns = ["mol_idx", "pixels", "total_vecs", "min_len", "max_len", "len_filtered"]
-        self.stat_df = pd.DataFrame(columns=stat_columns)
+        self.score_columns = ["mol_idx","score","empty","x1","y1","x2","y2","length","angle"]
+        self.score_df = pd.DataFrame(columns=self.score_columns)
+        self.stat_columns = ["mol_idx", "pixels", "total_vecs", "min_len", "max_len", "max_pix","len_filtered","score_cutoff"]
+        self.stat_df = pd.DataFrame(columns=self.stat_columns)
 
-    def _create_score_df(self):
-        score_columns = ["mol_idx","score","empty","x1","y1","x2","y2","length","angle"]
-        return pd.DataFrame(columns=score_columns)
-
-    def filter_by_length(self, mol:Molecule):
+    def filter_by_length(self, mol:Molecule) -> np.ndarray:
         """ Filter all possible pixel pairs by length between them
 
             Returns:
                 Array of pair of pixel ID in the molecule and displacement vector as dy, dx
                 [idx1, idx2, dy, dx]
+                If none of returning vectors, returns None
         """
+        if mol.count() > self.config["max_pix"]:
+            comb = mol.count() * (mol.count() - 1) // 2
+            self._add_len_filter_stat(mol, comb, 0)
+            return None
         min_len = self.config["min_len"]
         max_len = self.config["max_len"]
+
         dvectors = mol.get_displacement_vectors()  # all vectors
         dyx = dvectors.T[2:4]  # ndarray of [[dy,], [dx,]]
         dyx_sq = np.square(dyx).sum(axis=0)
         lengths = np.sqrt(dyx_sq)
         filtered_idx = np.where((lengths>=min_len) & (lengths<=max_len))[0]
         filtered = dvectors.take(filtered_idx, axis=0)
-
-        self.add_len_filter_stat(mol, len(dvectors.T), len(filtered))
+        self._add_len_filter_stat(mol, len(dyx[0]), len(filtered))
 
         return filtered
 
-    def add_len_filter_stat(self, mol:Molecule, total_vecs:np.int32, len_filtered:np.int32):
+    def _add_len_filter_stat(self, mol:Molecule, total_vecs:np.int32, len_filtered:np.int32):
         stat = pd.DataFrame([{
             "mol_idx":mol.mol_idx,
             "pixels":mol.count(),
             "min_len":self.config["min_len"],
             "max_len":self.config["max_len"],
+            "max_pix":self.config["max_pix"],
             "total_vecs":total_vecs,
             "len_filtered":len_filtered
         }])
         self.stat_df= pd.concat([self.stat_df,stat], axis=0, ignore_index=True)
-
 
     def score_lines(self, mol:Molecule, filtered_vecs):
         """ Score all lines of the molecule
@@ -214,9 +226,13 @@ class LineDetection:
             mol(Molecule): molecule
             vectors(ndarray): array of pair of pixel index of the molecule
         """
-        record_neg_empty = self.config["record_neg_empty"]
+        if mol.count() > self.config["max_pix"]:
+            return 0
+        if filtered_vecs.shape[0] == 0 or filtered_vecs.shape[1] == 0:
+            return 0
         # ["mol_idx","score","empty","x1","y1","x2","y2","length","angle"]
-        df = self._create_score_df()
+        results = {key: [] for key in self.score_columns}
+
         vecs = filtered_vecs  # vecs[0]: idx1, vecs[1]: idx2
         line_count = len(vecs.T[0])
         for i in range(line_count):
@@ -226,26 +242,26 @@ class LineDetection:
             (x1, y1) = (mol.yxT[yx1][1], mol.yxT[yx1][0])
             (x2, y2) = (mol.yxT[yx2][1], mol.yxT[yx2][0])
             (score, empty) = self.score_line(mol, x1, y1, x2, y2)
-            if not record_neg_empty and empty < 0:
+            if self.config["record_neg_empty"] == False and empty < 0:
                 continue  # skip record negative empty pixel count
             length = math.sqrt(dx*dx + dy*dy)
             angle = math.degrees(math.atan2(dy, dx))
-            score_row = pd.DataFrame([{
-                "mol_idx":mol.mol_idx,
-                "score":score,
-                "empty":empty,
-                "x1":x1,
-                "y1":y1,
-                "x2":x2,
-                "y2":y2,
-                "length":length,
-                "angle": angle
-            }])
-            df = pd.concat([df, score_row], axis=0, ignore_index=True)
+
+            results["mol_idx"].append(mol.mol_idx)
+            results["score"].append(score)
+            results["empty"].append(empty)
+            results["x1"].append(x1)
+            results["y1"].append(y1)
+            results["x2"].append(x2)
+            results["y2"].append(y2)
+            results["length"].append(length)
+            results["angle"].append(angle)
+        df = pd.DataFrame.from_dict(results)  # the fastest way to add rows
         # normalized score for each molecule
         df['norm_score'] = df['score'].apply(lambda x: (x - df['score'].mean()) / df['score'].std())
         df.sort_values("norm_score", ascending=False, inplace=True)
-        self.score_df = pd.concat([self.score_df,df], axis=0, ignore_index=True)
+        cutoff_df = df.loc[df["norm_score"] > self.config["score_cutoff"]]
+        self.score_df = pd.concat([self.score_df,cutoff_df], axis=0, ignore_index=True)
         return line_count
 
     def score_line(self, mol:Molecule, x1, y1, x2, y2) -> np.float64:
@@ -287,6 +303,28 @@ class LineDetection:
             postfix = f'_{self.config["min_len"]}_{self.config["max_len"]}_{self.config["allowed_empty"]}'
             savename = str(path.stem + postfix + ".pkl")
         self.score_df.to_pickle(savename)
+
+    def overlay_lines(self, num_lines=1, factor=1.2):
+        src = self.source_img
+        overlay = LineDetection.get_blank_image(self.height,self.width)
+        if len(self.score_df)==0:
+            raise ValueError("No scores estimated.")
+        for mol in self.molecules:
+            mol_idx = mol.mol_idx
+            df = self.score_df.loc[self.score_df["mol_idx"]==mol_idx].sort_values("norm_score", ascending=False)
+            if len(df[:num_lines]) == 0:
+                continue
+            mol_pos = [mol.src_left, mol.src_top, mol.src_left, mol.src_top]  # positions of Molecule
+            mol_mask = mol.get_mask()
+            max_height = (mol.src_img * mol_mask).max()
+            lines = LineDetection.get_blank_image(self.height,self.width)
+            for i in range(len(df[:num_lines])):
+                p = df.iloc[i][3:7] + mol_pos
+                line = self.draw_line(p["x1"], p["y1"], p["x2"], p["y2"],self.height,self.width)
+                lines = lines + (line * max_height * factor)
+            overlay = overlay + (lines / num_lines)
+        return overlay + src
+
 
     def __str__(self):
         mol_count = len(self.molecules)
@@ -392,10 +430,16 @@ class LineDetection:
         return ret_ndarray
 
     @staticmethod
-    def get_emphasized(mol, mask, factor=2.0, src_img=None):
+    def get_emphasized(mol, mask, factor=2.0, use_max=False, src_img=None):
         if src_img is None:
-            src_img = mol.src_img
-        return src_img + (mask * src_img * (factor - 1.0))
+            src_img = mol.src_img.copy()
+        if use_max:
+            max_height = (mask * src_img).max()
+            mask = mask.astype(dtype=bool)
+            src_img[mask] = max_height * factor
+            return src_img
+        else:
+            return src_img + (mask * src_img * (factor - 1.0))
 
     @staticmethod
     def get_pix_id_pair(vector_ar, vec_idx):

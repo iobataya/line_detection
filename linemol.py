@@ -47,6 +47,11 @@ class Molecule:
     def get_yx(self, pix_idx:int):
         return (self.y[pix_idx],self.x[pix_idx])
 
+    def get_xy12(self, px_idx1:int, px_idx2:int):
+        (y1, x1) = self.get_yx(px_idx1)
+        (y2, x2) = self.get_yx(px_idx2)
+        return (x1, y1, x2, y2)
+
     def get_vector(self, pix_idx:int):
         return self.yxT[pix_idx]
 
@@ -323,6 +328,7 @@ class LineDetection:
         self.width = labelled_img.shape[1]
         self.line_cache = {}
         self.line_cache_hit = (0,0)
+        self.mask_cache = {}
 
         self.config = linedet_config
         self.config.setdefault("min_len", 5)
@@ -376,21 +382,6 @@ class LineDetection:
         }])
         self.stat_df= pd.concat([self.stat_df,stat], axis=0, ignore_index=True)
 
-    def filter_by_overlapping(self, mol:Molecule) -> pd.DataFrame:
-        """ Find overlapped lines to eliminate in the array
-            Calculation takes a long time O(N x N).
-            TODO: to make it calculate from result score_df
-        """
-        if len(self.score_df) == 0:
-            return None
-        mol_idx = mol.mol_idx
-        df = self.score_df.loc[self.score_df["mol_idx"]==mol_idx]
-        if len(df) == 0:
-            return None
-
-
-    def __add_overlap_filter_stat(self, mol:Molecule, overlapped:int):
-        pass
 
 
     def score_lines(self, mol:Molecule, filtered_vecs):
@@ -504,15 +495,14 @@ class LineDetection:
     def _get_line_mask_cache(self, mol:Molecule, x1, y1, x2, y2):
         (hit, total) = self.line_cache_hit
         total += 1
-        (dx, dy) = (x1 - x2, y1 - y2)
-        if (dx, dy) in self.line_cache:
-            line = self.line_cache[(dx,dy)]
+        if (x1, y1, x2, y2) in self.line_cache:
+            line = self.line_cache[(x1, y1, x2, y2)]
             hit += 1
             self.line_cache_hit = (hit, total)
             return line.get_mask_at(mol.height, mol.width,origin_x=x2, origin_y=y2)
         else:
             line = Line.create_from_pos(x1, y1, x2, y2)
-            self.line_cache[(line.dx, line.dy)] = line
+            self.line_cache[(x1, y1, x2, y2)] = line
             self.line_cache_hit = (hit, total)
             return line.get_mask(mol.height, mol.width)
 

@@ -10,6 +10,7 @@ from ruamel.yaml.main import round_trip_load as yaml_load, round_trip_dump as ya
 import yaml
 import pandas as pd
 import math
+import tqdm
 
 class Molecule:
     """ Molecule class holds positions and pixels of molecule,
@@ -32,8 +33,8 @@ class Molecule:
         src_bottom = self.src_yx[YAXIS].max()
         self.width = src_right - self.src_left + 1
         self.height = src_bottom - self.src_top + 1
-        if self.width > 127 or self.height > 127:
-            raise IndexError(f"Grain is too large over 127.({self.width},{self.height})")
+        if self.width > 255 or self.height > 255:
+            raise IndexError(f"Grain is too large over 255.({self.width},{self.height})")
 
         vec_x = self.src_yx[XAXIS] - self.src_left
         vec_y = self.src_yx[YAXIS] - self.src_top
@@ -138,8 +139,8 @@ class Molecule:
         return (max(x1,x3) <= min(x2, x4)) and (max(y1, y3) < min(y2,y4))
 
 
-    def get_blank(self):
-        return np.zeros((self.height, self.width), dtype=np.int32)
+    def get_blank(self, dtype=np.int32):
+        return np.zeros((self.height, self.width), dtype=dtype)
 
     def get_mask(self):
         """ Generates a binary image of this molecule"""
@@ -202,6 +203,13 @@ class Line:
         )
         return line
 
+    @staticmethod
+    def create_from_score_df(score_df, mol_idx:int, line_idx:int):
+        row = score_df.loc[(score_df["mol_idx"]==mol_idx) & (score_df["line_idx"]==line_idx)]
+        if len(row) > 0:
+            return Line.create_from_pos(row["x1"], row["y1"], row["x2"], row["y2"])
+        return None
+
     def shifted_yxT(self):
         return self.yxT + self.offset_yx
 
@@ -210,7 +218,11 @@ class Line:
         (x1, y1) = (x2 + self.dx, y2 + self.dy)
         return (x1, y1, x2, y2)
 
+    def count(self):
+        return len(self.yxT)
+
     def get_mask(self, height, width):
+        """ Get mask of this line. dtype is bool """
         blank = np.zeros((height, width), dtype=bool)
         yxT_shifted = self.yxT + self.offset_yx
         for i in range(len(yxT_shifted)):
@@ -222,6 +234,7 @@ class Line:
 
     def get_mask_at(self, height, width, origin_x, origin_y):
         """ Get mask of displacement line whose origin is at origin_x, origin_y (x2, y2)
+        This mask is binary, (dtype=bool)
         """
         blank = np.zeros((height, width), dtype=bool)
         offset_yx = np.array([origin_y, origin_x], dtype=np.int32)
@@ -233,11 +246,6 @@ class Line:
             blank[y][x] = True
         return blank
 
-
-    def key(self):
-        """ tuple of (dx, dy) """
-        return (self.dx, self.dy)
-
     def __str__(self):
         (x1, y1, x2, y2) = self.get_x1y1x2y2()
         return f"Line ({x1},{y1})-({x2},{y2}) displacement:({self.dx},{self.dy})"
@@ -247,7 +255,6 @@ class Line:
         """ Returns binary image of line in a defined size
         Args:
             (x1,y1,x2,y2) (int): starting and end point of line
-            np_area (np.nd_array): nd_array to draw the line as 1
         Returns:
             (np.nd_array): [[dy,], [dx,]]
         """
@@ -337,10 +344,11 @@ class LineDetection:
         self.config.setdefault("allowed_empty", 1)
         self.config.setdefault("record_neg_empty", False)
         self.config.setdefault("score_cutoff", 1.0)
+        self.config.setdefault("use_cache", False)
 
-        self.score_columns = ["mol_idx","score","empty","x1","y1","x2","y2","length","angle"]
+        self.score_columns = ["mol_idx","score","empty","line_idx","x1","y1","x2","y2","length","angle"]
         self.score_df = pd.DataFrame(columns=self.score_columns)
-        self.stat_columns = ["mol_idx", "pixels", "total_vecs", "len_filtered","total_lines", "min_len", "max_len", "max_pix","score_cutoff"]
+        self.stat_columns = ["mol_idx", "pixels", "total_vecs", "x0","y0","len_filtered","total_lines", "min_len", "max_len", "max_pix","score_cutoff"]
         self.stat_df = pd.DataFrame(columns=self.stat_columns)
 
 
@@ -365,6 +373,8 @@ class LineDetection:
         dyx_sq = np.square(dyx).sum(axis=0)
         lengths = np.sqrt(dyx_sq)
         filtered_idx = np.where((lengths>=min_len) & (lengths<=max_len))[0]
+        if len(filtered_idx) == 0:
+            return None
         filtered = dvectors.take(filtered_idx, axis=0)
         self._add_len_filter_stat(mol, len(dyx[0]), len(filtered))
 
@@ -378,6 +388,8 @@ class LineDetection:
             "max_len":self.config["max_len"],
             "max_pix":self.config["max_pix"],
             "total_vecs":total_vecs,
+            "x0":mol.src_left,
+            "y0":mol.src_top,
             "len_filtered":len_filtered
         }])
         self.stat_df= pd.concat([self.stat_df,stat], axis=0, ignore_index=True)
@@ -400,6 +412,7 @@ class LineDetection:
 
         vecs = filtered_vecs  # vecs[0]: idx1, vecs[1]: idx2
         line_count = len(vecs.T[0])
+        line_idx = 0
         for i in range(line_count):
             yx1 = vecs[i][0]
             yx2 = vecs[i][1]
@@ -409,18 +422,21 @@ class LineDetection:
             (score, empty) = self.score_line(mol, x1, y1, x2, y2)
             if self.config["record_neg_empty"] == False and empty < 0:
                 continue  # skip record negative empty pixel count
+
             length = math.sqrt(dx*dx + dy*dy)
             angle = math.degrees(math.atan2(dy, dx))
 
             results["mol_idx"].append(mol.mol_idx)
             results["score"].append(score)
             results["empty"].append(empty)
+            results["line_idx"].append(line_idx)
             results["x1"].append(x1)
             results["y1"].append(y1)
             results["x2"].append(x2)
             results["y2"].append(y2)
             results["length"].append(length)
             results["angle"].append(angle)
+            line_idx += 1
         df = pd.DataFrame.from_dict(results)  # the fastest way to add rows
         # normalized score for each molecule
         df['norm_score'] = df['score'].apply(lambda x: (x - df['score'].mean()) / df['score'].std())
@@ -441,7 +457,7 @@ class LineDetection:
             int:    empty pixels, negative value if not allowed.
         """
         allowed_empty = self.config["allowed_empty"]
-        line_mask = self._get_line_mask_cache(mol, x1, y1, x2, y2)
+        line_mask = self._get_line_mask_cache(mol.height,mol.width, x1, y1, x2, y2)
         line_pixels = line_mask.sum()
         masked = mol.mask * line_mask
         overlapped_pixels = masked.sum()
@@ -453,6 +469,68 @@ class LineDetection:
             return (score, empty)
         else:
             return (0, -empty)
+
+    def prep_overlap_elim(self):
+        score_cols = self.score_df.columns
+        if not 'overlapped' in score_cols:
+            self.score_df["overlapped"] = np.zeros(len(self.score_df), dtype=bool)
+        if not 'overlap_by' in score_cols:
+            self.score_df["overlap_by"] = np.zeros(len(self.score_df), dtype=str)
+        stat_cols = self.stat_df.columns
+        if not 'overlap_checked' in stat_cols:
+            self.stat_df["overlap_checked"] = np.zeros(len(self.stat_df), dtype=bool)
+
+    def eliminate_overlap(self, mol_idx:int, diff_pix = 2):
+        if self.stat_df.loc[self.stat_df["mol_idx"]==mol_idx, "overlap_checked"].any():  # already checked
+            return
+        rows = self.score_df.loc[self.score_df["mol_idx"]==mol_idx]
+        line_idx = rows["line_idx"].to_numpy()
+        line_cnt = len(line_idx)
+        if line_cnt == 0:
+            self.stat_df.loc[self.stat_df["mol_idx"]==mol_idx, "overlap_checked"] = True
+            return
+        (x1s, y1s, x2s, y2s) = (rows["x1"].to_numpy(), rows["y1"].to_numpy(), rows["x2"].to_numpy(), rows["y2"].to_numpy())
+        (xs, ys) = (np.concatenate([x1s, x2s]), np.concatenate([y1s, y2s]))
+        (height, width) = (ys.max() + 1, xs.max() + 1)
+        covered = set()  # pool of overlapped line indecies
+        for i in range(line_cnt):
+            if line_idx[i] in covered:
+                continue
+            (x1, y1, x2, y2) = (x1s[i],y1s[i],x2s[i],y2s[i])
+            line_i = self._get_line_cache(x1, y1, x2, y2)
+            count_i = len(line_i.yxT)
+            for j in range(i+1, line_cnt):
+                if line_idx[j] in covered:
+                    continue
+                (x1, y1, x2, y2) = (x1s[j],y1s[j],x2s[j],y2s[j])
+                line_j = self._get_line_cache(x1, y1, x2, y2)
+                count_j = len(line_j.yxT)
+                shorter = min(count_i, count_j)
+                (mask_i, mask_j) = (line_i.get_mask(height, width), line_j.get_mask(height,width))
+                self._get_line_mask_cache(height, width, x1, y1, x2, y2)
+
+                if (mask_i & mask_j).sum() >= (shorter - diff_pix):
+                    if count_i > count_j:  # line_j is covered with line_i
+                        covered_idx = line_idx[j]
+                        covers_str = str(line_i)
+                    else:
+                        covered_idx = line_idx[i]
+                        covers_str = str(line_j)
+                    self.score_df.loc[
+                        (self.score_df["mol_idx"]==mol_idx) & (self.score_df["line_idx"]==covered_idx),
+                        ["overlapped","overlap_by"]
+                        ] = [True, covers_str]
+                    covered.add(covered_idx)
+        self.stat_df.loc[self.stat_df["mol_idx"]==mol_idx, "overlap_checked"] = True
+
+    def get_lines_mask(self, mol_idx, line_idx_list, height, width):
+        """ Get mask of specified lines in molecule """
+        mask = np.zeros((height,width), dtype=bool)
+        for line_idx in line_idx_list:
+            row = self.score_df.loc[(self.score_df["mol_idx"]==mol_idx) & (self.score_df["line_idx"]==line_idx),["x1","y1","x2","y2"]].values[0]
+            line = Line.create_from_pos(row[0],row[1],row[2],row[3])
+            mask = mask + line.get_mask(height,width)
+        return mask
 
     def save_score_pkl(self, filename, with_config=False):
         """ Save score DataFrame
@@ -471,40 +549,64 @@ class LineDetection:
 
     def overlay_lines(self, num_lines=1, factor=1.2):
         """ Image of all lines of highest score of a molecule """
+        # TODO: Return only line image !
+        # TODO: Split into overlay_line and overlay_lines
         src = self.source_img
         overlay = LineDetection.get_blank_image(self.height,self.width)
         if len(self.score_df)==0:
             raise ValueError("No scores estimated.")
+        max_height = self.source_img.max()
+        mol_count = 0
         for mol in self.molecules:
             mol_idx = mol.mol_idx
             df = self.score_df.loc[self.score_df["mol_idx"]==mol_idx].sort_values("norm_score", ascending=False)
             if len(df[:num_lines]) == 0:
                 continue
             mol_pos = [mol.src_left, mol.src_top, mol.src_left, mol.src_top]  # positions of Molecule
-            mol_mask = mol.get_mask()
-            max_height = (mol.src_img * mol_mask).max()
             lines = LineDetection.get_blank_image(self.height,self.width)
+            line_count = 0
             for i in range(len(df[:num_lines])):
-                p = df.iloc[i][3:7] + mol_pos
+                p = df.iloc[i][4:8] + mol_pos
                 l = Line.create_from_pos(p["x1"], p["y1"], p["x2"], p["y2"])
                 line = l.get_mask(self.height,self.width)
-                lines = lines + (line * max_height * factor)
-            overlay = overlay + (lines / num_lines)
-        return overlay + src
+                line.astype(dtype=np.float64)
+                lines = lines + line
+                line_count += 1
+            overlay = overlay + (lines / line_count)
+            mol_count += 1
+        return (overlay * max_height * factor / mol_count) + src
 
-    def _get_line_mask_cache(self, mol:Molecule, x1, y1, x2, y2):
+    def _get_line_mask_cache(self, height, width, x1, y1, x2, y2):
+        """ Get line mask binary image from in cache. If none, generate it.
+        """
         (hit, total) = self.line_cache_hit
         total += 1
-        if (x1, y1, x2, y2) in self.line_cache:
+        if self.config["use_cache"] and (x1, y1, x2, y2) in self.line_cache:
             line = self.line_cache[(x1, y1, x2, y2)]
             hit += 1
             self.line_cache_hit = (hit, total)
-            return line.get_mask_at(mol.height, mol.width,origin_x=x2, origin_y=y2)
+            return line.get_mask_at(height, width,origin_x=x2, origin_y=y2)
         else:
             line = Line.create_from_pos(x1, y1, x2, y2)
             self.line_cache[(x1, y1, x2, y2)] = line
             self.line_cache_hit = (hit, total)
-            return line.get_mask(mol.height, mol.width)
+            return line.get_mask(height, width)
+
+    def _get_line_cache(self, x1, y1, x2, y2):
+        """ Get line instance from in cache. If none, generate it.
+        """
+        (hit, total) = self.line_cache_hit
+        total += 1
+        if self.config["use_cache"] and (x1, y1, x2, y2) in self.line_cache:
+            line = self.line_cache[(x1, y1, x2, y2)]
+            hit += 1
+            self.line_cache_hit = (hit, total)
+            return line
+        else:
+            line = Line.create_from_pos(x1, y1, x2, y2)
+            self.line_cache[(x1, y1, x2, y2)] = line
+            self.line_cache_hit = (hit, total)
+            return line
 
 
     def __str__(self):
@@ -540,11 +642,7 @@ class LineDetection:
         h2 = str("-"*hc_w) + "+" + str("-"*t_w) + '\n'
         return h1 + h2 + table
 
-    @staticmethod
-    def plot_image(image, aspect = 1.0):
-        fig, ax = plt.subplots(figsize=(4, 4))
-        plt.imshow(image, cmap="afmhot", aspect=aspect)
-        plt.show()
+
 
     @staticmethod
     def get_blank_image(height, width, dtype=np.float64) -> np.ndarray:
@@ -583,4 +681,34 @@ class LineDetection:
     def mol_count(self):
         return len(self.molecules)
 
+class SpmPlot:
+    """ Helper class for plotting after TopoStats data processing """
+
+    @staticmethod
+    def image(image_data, figsize=(4,4), **plot_configs):
+        """ Plot image of TopoStats np.ndarray """
+        if image_data is None:
+            raise ValueError("No image data")
+        if not isinstance(image_data, np.ndarray):
+            raise TypeError("The data is not Numpy.ndarray")
+        fig, ax = plt.subplots(figsize=figsize)
+        plt.imshow(image_data, **plot_configs)
+        plt.show()
+
+    @staticmethod
+    def tile_images(image_dict, image_keys=[], figsize=(6,6), **plot_configs):
+        """ Tile images """
+        if len(image_dict) == 0:
+            raise ValueError("No images specified.")
+        if len(image_keys) == 0:  # if not specified, try to show all
+            image_keys = list(image_dict.keys())
+        cols = len(image_keys)
+        if cols > 4:
+            raise ValueError("Sorry, 4 images at maximum.")
+        fig, ax = plt.subplots(1, cols, figsize=figsize)
+        for col in range(cols):
+            ax[col].set_title(image_keys[col])
+            ax[col].imshow(image_dict[image_keys[col]], **plot_configs)
+        fig.tight_layout()
+        plt.show()
 

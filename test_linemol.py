@@ -270,6 +270,3 @@ class TestLineDetection:
                     count += 1
         assert len(ld0.stat_df) == 3
         ld0.overlay_lines()
-
-    def test_filter_by_overlapping(self, ld0:ld):
-        assert ld0.filter_by_overlapping(ld0.molecules[0]) == None

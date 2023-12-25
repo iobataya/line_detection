@@ -32,8 +32,8 @@ class Molecule:
         src_bottom = self.src_yx[YAXIS].max()
         self.width = src_right - self.src_left + 1
         self.height = src_bottom - self.src_top + 1
-        if self.width > 127 or self.height > 127:
-            raise IndexError(f"Grain is too large over 127.({self.width},{self.height})")
+        if self.width > 255 or self.height > 255:
+            raise IndexError(f"Grain is too large over 255.({self.width},{self.height})")
 
         vec_x = self.src_yx[XAXIS] - self.src_left
         vec_y = self.src_yx[YAXIS] - self.src_top
@@ -138,8 +138,8 @@ class Molecule:
         return (max(x1,x3) <= min(x2, x4)) and (max(y1, y3) < min(y2,y4))
 
 
-    def get_blank(self):
-        return np.zeros((self.height, self.width), dtype=np.int32)
+    def get_blank(self, dtype=np.int32):
+        return np.zeros((self.height, self.width), dtype=dtype)
 
     def get_mask(self):
         """ Generates a binary image of this molecule"""
@@ -211,6 +211,7 @@ class Line:
         return (x1, y1, x2, y2)
 
     def get_mask(self, height, width):
+        """ Get mask of this line. dtype is bool """
         blank = np.zeros((height, width), dtype=bool)
         yxT_shifted = self.yxT + self.offset_yx
         for i in range(len(yxT_shifted)):
@@ -222,6 +223,7 @@ class Line:
 
     def get_mask_at(self, height, width, origin_x, origin_y):
         """ Get mask of displacement line whose origin is at origin_x, origin_y (x2, y2)
+        This mask is binary, (dtype=bool)
         """
         blank = np.zeros((height, width), dtype=bool)
         offset_yx = np.array([origin_y, origin_x], dtype=np.int32)
@@ -232,11 +234,6 @@ class Line:
                 continue
             blank[y][x] = True
         return blank
-
-
-    def key(self):
-        """ tuple of (dx, dy) """
-        return (self.dx, self.dy)
 
     def __str__(self):
         (x1, y1, x2, y2) = self.get_x1y1x2y2()
@@ -337,6 +334,7 @@ class LineDetection:
         self.config.setdefault("allowed_empty", 1)
         self.config.setdefault("record_neg_empty", False)
         self.config.setdefault("score_cutoff", 1.0)
+        self.config.setdefault("use_cache", False)
 
         self.score_columns = ["mol_idx","score","empty","x1","y1","x2","y2","length","angle"]
         self.score_df = pd.DataFrame(columns=self.score_columns)
@@ -365,6 +363,8 @@ class LineDetection:
         dyx_sq = np.square(dyx).sum(axis=0)
         lengths = np.sqrt(dyx_sq)
         filtered_idx = np.where((lengths>=min_len) & (lengths<=max_len))[0]
+        if len(filtered_idx) == 0:
+            return None
         filtered = dvectors.take(filtered_idx, axis=0)
         self._add_len_filter_stat(mol, len(dyx[0]), len(filtered))
 
@@ -475,27 +475,31 @@ class LineDetection:
         overlay = LineDetection.get_blank_image(self.height,self.width)
         if len(self.score_df)==0:
             raise ValueError("No scores estimated.")
+        max_height = self.source_img.max()
+        mol_count = 0
         for mol in self.molecules:
             mol_idx = mol.mol_idx
             df = self.score_df.loc[self.score_df["mol_idx"]==mol_idx].sort_values("norm_score", ascending=False)
             if len(df[:num_lines]) == 0:
                 continue
             mol_pos = [mol.src_left, mol.src_top, mol.src_left, mol.src_top]  # positions of Molecule
-            mol_mask = mol.get_mask()
-            max_height = (mol.src_img * mol_mask).max()
             lines = LineDetection.get_blank_image(self.height,self.width)
+            line_count = 0
             for i in range(len(df[:num_lines])):
                 p = df.iloc[i][3:7] + mol_pos
                 l = Line.create_from_pos(p["x1"], p["y1"], p["x2"], p["y2"])
                 line = l.get_mask(self.height,self.width)
-                lines = lines + (line * max_height * factor)
-            overlay = overlay + (lines / num_lines)
-        return overlay + src
+                line.astype(dtype=np.float64)
+                lines = lines + line
+                line_count += 1
+            overlay = overlay + (lines / line_count)
+            mol_count += 1
+        return (overlay * max_height * factor / mol_count) + src
 
     def _get_line_mask_cache(self, mol:Molecule, x1, y1, x2, y2):
         (hit, total) = self.line_cache_hit
         total += 1
-        if (x1, y1, x2, y2) in self.line_cache:
+        if self.config["use_cache"] and (x1, y1, x2, y2) in self.line_cache:
             line = self.line_cache[(x1, y1, x2, y2)]
             hit += 1
             self.line_cache_hit = (hit, total)
